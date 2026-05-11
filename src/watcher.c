@@ -2,7 +2,7 @@
 #include "log.h"
 
 #include <errno.h>
-#include <limits.h>
+#include <linux/limits.h>
 #include <poll.h>
 #include <stdio.h>
 #include <string.h>
