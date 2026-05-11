@@ -76,6 +76,12 @@ meson compile -C build
 make build
 ```
 
+Быстро проверить сборку и базовое поведение CLI:
+
+```bash
+make check
+```
+
 Установить бинарь и user-service:
 
 ```bash

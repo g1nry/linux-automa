@@ -7,12 +7,13 @@ USER_SYSTEMD_DIR := $(HOME)/.config/systemd/user
 USER_SERVICE := $(USER_SYSTEMD_DIR)/$(PROJECT_NAME).service
 SERVICE_SOURCE := systemd/user/$(PROJECT_NAME).service
 
-.PHONY: help setup build run clean install-user uninstall-user restart-user status-user logs-user
+.PHONY: help setup build check run clean install-user uninstall-user restart-user status-user logs-user
 
 help:
 	@echo "Available targets:"
 	@echo "  make setup          Configure Meson build directory"
 	@echo "  make build          Build fileward"
+	@echo "  make check          Build and run a basic CLI sanity check"
 	@echo "  make run            Run fileward against ~/Downloads"
 	@echo "  make clean          Remove build directory"
 	@echo "  make install-user   Install and start user systemd service"
@@ -27,6 +28,17 @@ setup:
 build:
 	@if [ ! -d "$(BUILD_DIR)" ]; then meson setup $(BUILD_DIR); fi
 	meson compile -C $(BUILD_DIR)
+
+check: build
+	@./$(BINARY) >/tmp/fileward-check.out 2>/tmp/fileward-check.err; \
+	status=$$?; \
+	if [ $$status -eq 1 ] && grep -q "Usage:" /tmp/fileward-check.err; then \
+		echo "check passed"; \
+	else \
+		echo "check failed"; \
+		cat /tmp/fileward-check.err; \
+		exit 1; \
+	fi
 
 run: build
 	mkdir -p $(HOME)/Downloads
