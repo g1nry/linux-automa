@@ -1,7 +1,7 @@
 [Unit]
 Description=Fileward local automation daemon
-Documentation=README.md
 After=default.target
+ConditionPathIsDirectory=%h/Downloads
 
 [Service]
 Type=simple
