@@ -1,54 +1,63 @@
 #include "log.h"
+
+#include <stdarg.h>
 #include <stdio.h>
 #include <time.h>
-#include <syslog.h>
 
-static int use_syslog = 0;
+static const char *app_name = "fileward";
 
 void log_init(const char *program_name) {
-    openlog(program_name, LOG_PID | LOG_CONS, LOG_USER);
-    use_syslog = 1;
+    if (program_name != NULL) {
+        app_name = program_name;
+    }
 }
 
-static void log_message(int priority, const char *format, va_list args) {
-    if (use_syslog) {
-        vsyslog(priority, format, args);
-    } else {
-        time_t now = time(NULL);
-        char *time_str = ctime(&now);
-        time_str[strlen(time_str)-1] = '\0'; // remove \n
-        fprintf(stderr, "[%s] ", time_str);
-        vfprintf(stderr, format, args);
-        fprintf(stderr, "\n");
+static void log_message(const char *level, const char *format, va_list args) {
+    time_t now = time(NULL);
+    struct tm *time_info = localtime(&now);
+    char timestamp[32] = "unknown-time";
+
+    if (time_info != NULL) {
+        strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", time_info);
     }
+
+    fprintf(stderr, "[%s] %s: %s: ", timestamp, app_name, level);
+    vfprintf(stderr, format, args);
+    fprintf(stderr, "\n");
 }
 
 void log_info(const char *format, ...) {
     va_list args;
+
     va_start(args, format);
-    log_message(LOG_INFO, format, args);
+    log_message("info", format, args);
     va_end(args);
 }
 
 void log_warn(const char *format, ...) {
     va_list args;
+
     va_start(args, format);
-    log_message(LOG_WARNING, format, args);
+    log_message("warn", format, args);
     va_end(args);
 }
 
 void log_error(const char *format, ...) {
     va_list args;
+
     va_start(args, format);
-    log_message(LOG_ERR, format, args);
+    log_message("error", format, args);
     va_end(args);
 }
 
 void log_debug(const char *format, ...) {
 #ifdef DEBUG
     va_list args;
+
     va_start(args, format);
-    log_message(LOG_DEBUG, format, args);
+    log_message("debug", format, args);
     va_end(args);
+#else
+    (void)format;
 #endif
 }
