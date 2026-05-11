@@ -66,6 +66,48 @@ meson compile -C build
 ./build/fileward ~/Downloads
 ```
 
+## Makefile workflow
+
+Для повседневной разработки удобнее использовать `Makefile`.
+
+Собрать проект:
+
+```bash
+make build
+```
+
+Установить бинарь и user-service:
+
+```bash
+make install-user
+```
+
+Перезапустить user-service после изменений:
+
+```bash
+make restart-user
+```
+
+Посмотреть статус:
+
+```bash
+make status-user
+```
+
+Смотреть логи:
+
+```bash
+make logs-user
+```
+
+Удалить user-service и установленный бинарь:
+
+```bash
+make uninstall-user
+```
+
+`install-user` ставит бинарь в `~/.local/bin/fileward`, service-файл в `~/.config/systemd/user/fileward.service` и запускает сервис через `systemctl --user`.
+
 ## Быстрая проверка без Meson
 
 Для быстрой проверки компиляции:
