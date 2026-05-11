@@ -1,0 +1,13 @@
+[Unit]
+Description=Fileward local automation daemon
+Documentation=README.md
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/fileward %h/Downloads
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=default.target
