@@ -42,22 +42,28 @@ static const char *event_type_from_mask(uint32_t mask) {
 }
 
 static void print_event(const struct inotify_event *event) {
-    char full_path[PATH_MAX];
     const char *event_type = event_type_from_mask(event->mask);
 
     if (event->len > 0 && event->name[0] != '\0') {
-        snprintf(full_path, sizeof(full_path), "%s/%s", watched_path, event->name);
+        printf("[%s] %s/%s\n", event_type, watched_path, event->name);
     } else {
-        snprintf(full_path, sizeof(full_path), "%s", watched_path);
+        printf("[%s] %s\n", event_type, watched_path);
     }
 
-    printf("[%s] %s\n", event_type, full_path);
     fflush(stdout);
 }
 
 int start_watcher(const char *path) {
+    int written;
+
     if (path == NULL || path[0] == '\0') {
         log_error("watch path is empty");
+        return -1;
+    }
+
+    written = snprintf(watched_path, sizeof(watched_path), "%s", path);
+    if (written < 0 || (size_t)written >= sizeof(watched_path)) {
+        log_error("watch path is too long");
         return -1;
     }
 
@@ -69,18 +75,17 @@ int start_watcher(const char *path) {
 
     watch_fd = inotify_add_watch(
         inotify_fd,
-        path,
+        watched_path,
         IN_CREATE | IN_MODIFY | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO
     );
 
     if (watch_fd == -1) {
-        log_error("cannot watch '%s': %s", path, strerror(errno));
+        log_error("cannot watch '%s': %s", watched_path, strerror(errno));
         close(inotify_fd);
         inotify_fd = -1;
         return -1;
     }
 
-    snprintf(watched_path, sizeof(watched_path), "%s", path);
     log_info("watching directory: %s", watched_path);
 
     return 0;
