@@ -7,4 +7,5 @@ executable('fileward',
            'src/main.c',
            'src/watcher.c',
            'src/log.c',
+           'src/config.c',
            install: true)

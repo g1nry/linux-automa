@@ -66,6 +66,12 @@ meson compile -C build
 ./build/fileward ~/Downloads
 ```
 
+Запуск с конфигурационным файлом:
+
+```bash
+./build/fileward --config fileward.conf
+```
+
 ## Makefile workflow
 
 Для повседневной разработки удобнее использовать `Makefile`.
