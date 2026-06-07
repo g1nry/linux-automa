@@ -58,7 +58,7 @@ static const char *basename_of(const char *path) {
     return base ? base + 1 : path;
 }
 
-int execute_action(const action_t *action, const char *watch_path, const char *filename, event_type_t event) {
+int execute_action(const action_t *action, const char *watch_path, const char *filename, event_type_t event, int dry_run) {
     if (action == NULL || filename == NULL || watch_path == NULL) {
         return -1;
     }
@@ -68,6 +68,15 @@ int execute_action(const action_t *action, const char *watch_path, const char *f
 
     switch (action->type) {
     case ACTION_LOG: {
+        if (dry_run) {
+            if (action->message[0] != '\0') {
+                log_info("dry-run: would log '%s'", action->message);
+            } else {
+                log_info("dry-run: would log '%s %s/%s'", event_type_name(event), watch_path, filename);
+            }
+            return 0;
+        }
+
         if (action->message[0] != '\0') {
             log_info("action log: %s", action->message);
         } else {
@@ -96,6 +105,11 @@ int execute_action(const action_t *action, const char *watch_path, const char *f
         if (written < 0 || (size_t)written >= sizeof(target)) {
             log_error("destination path is too long");
             return -1;
+        }
+
+        if (dry_run) {
+            log_info("dry-run: would move '%s' -> '%s'", source, target);
+            return 0;
         }
 
         if (rename(source, target) != 0) {

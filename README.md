@@ -72,6 +72,18 @@ meson compile -C build
 ./build/fileward --config fileward.conf
 ```
 
+Запуск в режиме dry-run:
+
+```bash
+./build/fileward --dry-run --config fileward.conf
+```
+
+или без конфига:
+
+```bash
+./build/fileward --dry-run ~/Downloads
+```
+
 ## Makefile workflow
 
 Для повседневной разработки удобнее использовать `Makefile`.
