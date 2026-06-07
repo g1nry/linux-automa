@@ -84,6 +84,14 @@ meson compile -C build
 ./build/fileward --dry-run ~/Downloads
 ```
 
+Перезагрузка конфигурации через SIGHUP:
+
+```bash
+kill -HUP <pid>
+```
+
+Если `fileward` запущен с `--config fileward.conf`, он перечитает конфиг и применит новые правила без перезапуска.
+
 ## Makefile workflow
 
 Для повседневной разработки удобнее использовать `Makefile`.

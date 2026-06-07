@@ -9,9 +9,14 @@
 #include <string.h>
 
 static volatile sig_atomic_t running = 1;
+static volatile sig_atomic_t reload_requested = 0;
 
 static void handle_signal(int signal_number) {
-    (void)signal_number;
+    if (signal_number == SIGHUP) {
+        reload_requested = 1;
+        return;
+    }
+
     running = 0;
 }
 
@@ -70,6 +75,34 @@ static int handle_file_event(const file_event_t *event, void *user_data) {
         execute_action(&rule->action, config->watch_path, event->filename, event->type, context->dry_run);
     }
 
+    return 0;
+}
+
+static int reload_config_if_requested(const char *config_path, config_t *config) {
+    if (!reload_requested) {
+        return 0;
+    }
+
+    reload_requested = 0;
+
+    if (config_path == NULL) {
+        log_warn("SIGHUP received but no config file is configured");
+        return 0;
+    }
+
+    config_t new_config;
+    if (load_config(config_path, &new_config) != 0) {
+        log_error("failed to reload config: %s", config_path);
+        return -1;
+    }
+
+    if (strcmp(new_config.watch_path, config->watch_path) != 0) {
+        log_error("config reload changed watch path, restart required");
+        return -1;
+    }
+
+    *config = new_config;
+    log_info("reloaded config: %s", config_path);
     return 0;
 }
 
@@ -139,9 +172,14 @@ int main(int argc, char *argv[]) {
     context.config = &config;
     context.dry_run = dry_run;
 
-    int (*event_callback)(const file_event_t *, void *) = config.rule_count > 0 ? handle_file_event : print_event_callback;
-
     while (running) {
+        if (reload_config_if_requested(config_path, &config) != 0) {
+            stop_watcher();
+            return 1;
+        }
+
+        int (*event_callback)(const file_event_t *, void *) = config.rule_count > 0 ? handle_file_event : print_event_callback;
+
         if (watcher_process_events(500, event_callback, &context) != 0) {
             stop_watcher();
             return 1;
