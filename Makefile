@@ -30,19 +30,19 @@ build:
 	meson compile -C $(BUILD_DIR)
 
 check: build
-	@./$(BINARY) >/tmp/fileward-check.out 2>/tmp/fileward-check.err; \
+	@./$(BINARY) help >/tmp/fileward-check.out 2>&1; \
 	status=$$?; \
-	if [ $$status -eq 1 ] && grep -q "Usage:" /tmp/fileward-check.err; then \
+	if [ $$status -eq 0 ] && grep -q "Usage:" /tmp/fileward-check.out; then \
 		echo "check passed"; \
 	else \
 		echo "check failed"; \
-		cat /tmp/fileward-check.err; \
+		cat /tmp/fileward-check.out; \
 		exit 1; \
 	fi
 
 run: build
 	mkdir -p $(HOME)/Downloads
-	./$(BINARY) $(HOME)/Downloads
+	./$(BINARY) run $(HOME)/Downloads
 
 clean:
 	rm -rf $(BUILD_DIR)

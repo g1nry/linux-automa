@@ -6,6 +6,13 @@ Fileward — лёгкий локальный демон автоматизаци
 
 Проект начинается как небольшой watcher на базе `inotify`, но дальше должен вырасти в локальный event-driven automation daemon.
 
+## Структура проекта
+
+- `src/` — исходные файлы C
+- `include/fileward/` — заголовочные файлы
+- `systemd/` — юниты для user/systemd-инсталляции
+- `meson.build`, `Makefile`, `README.md` — корневой проектный каркас
+
 ## Идея
 
 ```text
@@ -33,7 +40,7 @@ C-файл изменился в проекте       -> запустить те
 Текущий фокус:
 
 - запуск из терминала;
-- наблюдение за одной директорией через `inotify`;
+- рекурсивное наблюдение за директорией через `inotify`;
 - вывод событий создания, изменения, удаления и перемещения файлов;
 - корректная остановка по `Ctrl+C`.
 
@@ -63,8 +70,52 @@ meson compile -C build
 Запуск:
 
 ```bash
-./build/fileward ~/Downloads
+./build/fileward run ~/Downloads
 ```
+
+или через `run` target:
+
+```bash
+make run
+```
+
+Запуск с конфигурационным файлом:
+
+```bash
+./build/fileward run --config fileward.conf
+```
+
+Запуск в режиме dry-run:
+
+```bash
+./build/fileward run --dry-run --config fileward.conf
+```
+
+или без конфига:
+
+```bash
+./build/fileward run --dry-run ~/Downloads
+```
+
+Проверка пути и правил:
+
+```bash
+./build/fileward test --config fileward.conf ~/Downloads/report.pdf
+```
+
+Объяснение совпадений:
+
+```bash
+./build/fileward explain --config fileward.conf --event created docs/report.pdf
+```
+
+Перезагрузка конфигурации через SIGHUP:
+
+```bash
+kill -HUP <pid>
+```
+
+Если `fileward` запущен с `--config fileward.conf`, он перечитает конфиг и применит новые правила без перезапуска.
 
 ## Makefile workflow
 
@@ -81,6 +132,8 @@ make build
 ```bash
 make check
 ```
+
+`make check` собирает проект и проверяет, что `fileward help` работает и выводит подсказку.
 
 Установить бинарь и user-service:
 
@@ -119,7 +172,7 @@ make uninstall-user
 Для быстрой проверки компиляции:
 
 ```bash
-cc -std=c11 -Wall -Wextra -Isrc src/main.c src/watcher.c src/log.c -o /tmp/fileward
+cc -std=c11 -Wall -Wextra -Isrc -Iinclude src/main.c src/watcher.c src/log.c src/config.c src/action.c src/glob.c -o /tmp/fileward
 ```
 
 Запуск:
@@ -168,10 +221,15 @@ cc -std=c11 -Wall -Wextra -Isrc src/main.c src/watcher.c src/log.c -o /tmp/filew
 watch ~/Downloads
 
 when created *.pdf move ~/Documents/PDF
-when created *.png move ~/Pictures/Screenshots
-when created *.zip move ~/Archives
-when modified *.c run "make test"
+when modified *.c log "C source updated"
 ```
+
+В этом этапе конфигурация поддерживает:
+- `watch <path>` — каталог для наблюдения
+- `when <event> <pattern> move <target>` — перемещение совпадающих файлов
+- `when <event> <pattern> log "message"` — логирование события
+- glob-паттерны `**/*.txt` для вложенных директорий
+- путь внутри watch-дерева, например `docs/**/*.md`
 
 ## Лицензия
 
