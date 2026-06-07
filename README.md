@@ -73,6 +73,12 @@ meson compile -C build
 ./build/fileward run ~/Downloads
 ```
 
+или через `run` target:
+
+```bash
+make run
+```
+
 Запуск с конфигурационным файлом:
 
 ```bash
@@ -126,6 +132,8 @@ make build
 ```bash
 make check
 ```
+
+`make check` собирает проект и проверяет, что `fileward help` работает и выводит подсказку.
 
 Установить бинарь и user-service:
 
