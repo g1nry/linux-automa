@@ -9,4 +9,5 @@ executable('fileward',
            'src/log.c',
            'src/config.c',
            'src/action.c',
+           'src/glob.c',
            install: true)

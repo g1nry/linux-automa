@@ -193,6 +193,8 @@ when modified *.c log "C source updated"
 - `watch <path>` — каталог для наблюдения
 - `when <event> <pattern> move <target>` — перемещение совпадающих файлов
 - `when <event> <pattern> log "message"` — логирование события
+- glob-паттерны `**/*.txt` для вложенных директорий
+- путь внутри watch-дерева, например `docs/**/*.md`
 
 ## Лицензия
 

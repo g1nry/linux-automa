@@ -1,9 +1,9 @@
 #include "action.h"
 #include "config.h"
+#include "glob.h"
 #include "log.h"
 #include "watcher.h"
 
-#include <fnmatch.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -63,7 +63,7 @@ static int handle_file_event(const file_event_t *event, void *user_data) {
             continue;
         }
 
-        if (fnmatch(rule->path_glob, event->filename, 0) != 0) {
+        if (!glob_match(rule->path_glob, event->filename)) {
             continue;
         }
 
