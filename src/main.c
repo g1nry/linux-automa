@@ -1,3 +1,10 @@
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE
+#endif
+#ifndef _XOPEN_SOURCE
+#define _XOPEN_SOURCE 700
+#endif
+
 #include <fileward/action.h>
 #include <fileward/config.h>
 #include <fileward/glob.h>
@@ -103,6 +110,61 @@ static void print_help(const char *program_name) {
     fprintf(stderr, "  %s run --dry-run ~/Downloads\n", program_name);
     fprintf(stderr, "  %s test --config fileward.conf ~/Downloads/report.pdf\n", program_name);
     fprintf(stderr, "  %s explain --config fileward.conf --event created docs/report.pdf\n", program_name);
+}
+
+typedef struct {
+    const config_t *config;
+    int dry_run;
+} runtime_context_t;
+
+static int print_event_callback(const file_event_t *event, void *user_data) {
+    (void)user_data;
+    if (event == NULL) {
+        return -1;
+    }
+
+    printf("event: %s", event_type_to_string(event->type));
+    if (event->filename[0] != '\0') {
+        printf(" path: %s", event->filename);
+    }
+    printf("\n");
+    return 0;
+}
+
+static int handle_file_event(const file_event_t *event, void *user_data) {
+    if (event == NULL || user_data == NULL) {
+        return -1;
+    }
+
+    runtime_context_t *context = user_data;
+    if (context->config == NULL) {
+        return -1;
+    }
+
+    if (event->filename[0] == '\0') {
+        log_warn("received event without filename");
+        return 0;
+    }
+
+    int matched = 0;
+    for (int i = 0; i < context->config->rule_count; i++) {
+        const rule_t *rule = &context->config->rules[i];
+        if (rule->event != event->type) {
+            continue;
+        }
+        if (!glob_match(rule->path_glob, event->filename)) {
+            continue;
+        }
+
+        matched++;
+        execute_action(&rule->action, context->config->watch_path, event->filename, event->type, context->dry_run);
+    }
+
+    if (matched == 0) {
+        log_debug("no matching rules for %s", event->filename);
+    }
+
+    return 0;
 }
 
 static int load_watch_config(const char *config_path, const char *watch_path, config_t *config, const char **out_watch_path) {

@@ -1,3 +1,7 @@
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE
+#endif
+
 #include <fileward/watcher.h>
 #include <fileward/log.h>
 
