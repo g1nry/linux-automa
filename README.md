@@ -174,10 +174,13 @@ cc -std=c11 -Wall -Wextra -Isrc src/main.c src/watcher.c src/log.c -o /tmp/filew
 watch ~/Downloads
 
 when created *.pdf move ~/Documents/PDF
-when created *.png move ~/Pictures/Screenshots
-when created *.zip move ~/Archives
-when modified *.c run "make test"
+when modified *.c log "C source updated"
 ```
+
+В этом этапе конфигурация поддерживает:
+- `watch <path>` — каталог для наблюдения
+- `when <event> <pattern> move <target>` — перемещение совпадающих файлов
+- `when <event> <pattern> log "message"` — логирование события
 
 ## Лицензия
 

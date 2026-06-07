@@ -17,40 +17,28 @@ static int inotify_fd = -1;
 static int watch_fd = -1;
 static char watched_path[PATH_MAX];
 
-static const char *event_type_from_mask(uint32_t mask) {
+static event_type_t event_type_from_mask(uint32_t mask) {
     if (mask & IN_CREATE) {
-        return "created";
+        return EVENT_CREATED;
     }
 
     if (mask & IN_MODIFY) {
-        return "modified";
+        return EVENT_MODIFIED;
     }
 
     if (mask & IN_DELETE) {
-        return "deleted";
+        return EVENT_DELETED;
     }
 
     if (mask & IN_MOVED_FROM) {
-        return "moved_from";
+        return EVENT_MOVED_FROM;
     }
 
     if (mask & IN_MOVED_TO) {
-        return "moved_to";
+        return EVENT_MOVED_TO;
     }
 
-    return "unknown";
-}
-
-static void print_event(const struct inotify_event *event) {
-    const char *event_type = event_type_from_mask(event->mask);
-
-    if (event->len > 0 && event->name[0] != '\0') {
-        printf("[%s] %s/%s\n", event_type, watched_path, event->name);
-    } else {
-        printf("[%s] %s\n", event_type, watched_path);
-    }
-
-    fflush(stdout);
+    return EVENT_UNKNOWN;
 }
 
 int start_watcher(const char *path) {
@@ -91,7 +79,7 @@ int start_watcher(const char *path) {
     return 0;
 }
 
-int watcher_process_events(int timeout_ms) {
+int watcher_process_events(int timeout_ms, int (*callback)(const file_event_t *, void *), void *user_data) {
     char buffer[EVENT_BUF_LEN];
     struct pollfd poll_fd;
     ssize_t bytes_read;
@@ -132,8 +120,20 @@ int watcher_process_events(int timeout_ms) {
 
     while (offset < (size_t)bytes_read) {
         const struct inotify_event *event = (const struct inotify_event *)(buffer + offset);
+        file_event_t file_event;
 
-        print_event(event);
+        file_event.type = event_type_from_mask(event->mask);
+        file_event.filename[0] = '\0';
+
+        if (event->len > 0 && event->name[0] != '\0') {
+            strncpy(file_event.filename, event->name, sizeof(file_event.filename));
+            file_event.filename[sizeof(file_event.filename) - 1] = '\0';
+        }
+
+        if (callback != NULL) {
+            callback(&file_event, user_data);
+        }
+
         offset += EVENT_SIZE + event->len;
     }
 
