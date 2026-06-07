@@ -4,9 +4,12 @@
 #include "log.h"
 #include "watcher.h"
 
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 static volatile sig_atomic_t running = 1;
 static volatile sig_atomic_t reload_requested = 0;
@@ -37,93 +40,145 @@ static const char *event_type_to_string(event_type_t type) {
     }
 }
 
-static int print_event_callback(const file_event_t *event, void *user_data) {
-    (void)user_data;
-
-    if (event->filename[0] != '\0') {
-        printf("[%s] %s\n", event_type_to_string(event->type), event->filename);
-    } else {
-        printf("[%s]\n", event_type_to_string(event->type));
+static event_type_t parse_event_type(const char *token) {
+    if (strcmp(token, "created") == 0) {
+        return EVENT_CREATED;
     }
-    fflush(stdout);
-    return 0;
+    if (strcmp(token, "modified") == 0) {
+        return EVENT_MODIFIED;
+    }
+    if (strcmp(token, "deleted") == 0) {
+        return EVENT_DELETED;
+    }
+    if (strcmp(token, "moved_from") == 0) {
+        return EVENT_MOVED_FROM;
+    }
+    if (strcmp(token, "moved_to") == 0) {
+        return EVENT_MOVED_TO;
+    }
+    return EVENT_UNKNOWN;
 }
 
-typedef struct {
-    config_t *config;
-    int dry_run;
-} runtime_context_t;
-
-static int handle_file_event(const file_event_t *event, void *user_data) {
-    runtime_context_t *context = (runtime_context_t *)user_data;
-    config_t *config = context->config;
-    if (event->filename[0] == '\0') {
-        return 0;
-    }
-
-    for (int i = 0; i < config->rule_count; i++) {
-        rule_t *rule = &config->rules[i];
-
-        if (rule->event != event->type) {
-            continue;
-        }
-
-        if (!glob_match(rule->path_glob, event->filename)) {
-            continue;
-        }
-
-        execute_action(&rule->action, config->watch_path, event->filename, event->type, context->dry_run);
-    }
-
-    return 0;
-}
-
-static int reload_config_if_requested(const char *config_path, config_t *config) {
-    if (!reload_requested) {
-        return 0;
-    }
-
-    reload_requested = 0;
-
-    if (config_path == NULL) {
-        log_warn("SIGHUP received but no config file is configured");
-        return 0;
-    }
-
-    config_t new_config;
-    if (load_config(config_path, &new_config) != 0) {
-        log_error("failed to reload config: %s", config_path);
-        return -1;
-    }
-
-    if (strcmp(new_config.watch_path, config->watch_path) != 0) {
-        log_error("config reload changed watch path, restart required");
-        return -1;
-    }
-
-    *config = new_config;
-    log_info("reloaded config: %s", config_path);
-    return 0;
+static int is_help_arg(const char *arg) {
+    return arg != NULL &&
+           (strcmp(arg, "-h") == 0 || strcmp(arg, "--help") == 0 || strcmp(arg, "help") == 0);
 }
 
 static void print_usage(const char *program_name) {
-    fprintf(stderr, "Usage: %s [--config <file>] [--dry-run] <directory_to_watch>\n", program_name);
+    fprintf(stderr, "Usage: %s <subcommand> [options]\n", program_name);
+    fprintf(stderr, "       %s run [--config <file>] [--dry-run] <directory_to_watch>\n", program_name);
+    fprintf(stderr, "       %s test [--config <file>] <path>\n", program_name);
+    fprintf(stderr, "       %s explain [--config <file>] [--event <event>] <path>\n", program_name);
 }
 
-int main(int argc, char *argv[]) {
+static void print_help(const char *program_name) {
+    print_usage(program_name);
+    fprintf(stderr, "\nSubcommands:\n");
+    fprintf(stderr, "  run      start the watcher (default when no subcommand is provided)\n");
+    fprintf(stderr, "  test     validate a path and show rule matches for a config\n");
+    fprintf(stderr, "  explain  explain which rules would match a path for an event\n");
+    fprintf(stderr, "\nOptions:\n");
+    fprintf(stderr, "  --config <file>  load rules from a config file\n");
+    fprintf(stderr, "  --dry-run        do not execute actions when running\n");
+    fprintf(stderr, "  --event <event>  event type for explain: created, modified, deleted, moved_from, moved_to\n");
+    fprintf(stderr, "\nExamples:\n");
+    fprintf(stderr, "  %s run --config fileward.conf\n", program_name);
+    fprintf(stderr, "  %s run --dry-run ~/Downloads\n", program_name);
+    fprintf(stderr, "  %s test --config fileward.conf ~/Downloads/report.pdf\n", program_name);
+    fprintf(stderr, "  %s explain --config fileward.conf --event created docs/report.pdf\n", program_name);
+}
+
+static int load_watch_config(const char *config_path, const char *watch_path, config_t *config, const char **out_watch_path) {
+    if (config_path != NULL) {
+        if (load_config(config_path, config) != 0) {
+            return -1;
+        }
+        *out_watch_path = config->watch_path;
+        return 0;
+    }
+
+    if (watch_path == NULL) {
+        return -1;
+    }
+
+    config->watch_path[0] = '\0';
+    config->rule_count = 0;
+    strncpy(config->watch_path, watch_path, sizeof(config->watch_path));
+    config->watch_path[sizeof(config->watch_path) - 1] = '\0';
+    *out_watch_path = config->watch_path;
+    return 0;
+}
+
+static int path_within_root(const char *root, const char *target, char *relative, size_t relative_size) {
+    char resolved_root[PATH_MAX];
+    char resolved_target[PATH_MAX];
+
+    if (realpath(root, resolved_root) == NULL) {
+        return -1;
+    }
+    if (realpath(target, resolved_target) == NULL) {
+        return -1;
+    }
+
+    size_t root_len = strlen(resolved_root);
+    if (strncmp(resolved_root, resolved_target, root_len) != 0) {
+        return 0;
+    }
+
+    const char *relative_path = resolved_target + root_len;
+    if (*relative_path == '/') {
+        relative_path++;
+    }
+
+    if (strlen(relative_path) >= relative_size) {
+        return -1;
+    }
+
+    strcpy(relative, relative_path);
+    return 1;
+}
+
+static int describe_matching_rules(const char *relative_path, event_type_t event, const config_t *config) {
+    int matched = 0;
+    for (int i = 0; i < config->rule_count; i++) {
+        const rule_t *rule = &config->rules[i];
+        if (rule->event != event) {
+            continue;
+        }
+        if (!glob_match(rule->path_glob, relative_path)) {
+            continue;
+        }
+
+        matched++;
+        printf("Match %d:\n", matched);
+        printf("  event: %s\n", event_type_to_string(rule->event));
+        printf("  pattern: %s\n", rule->path_glob);
+        printf("  action: %s\n", rule->action.type == ACTION_LOG ? "log" : "move");
+        if (rule->action.type == ACTION_MOVE) {
+            printf("  target: %s\n", rule->action.target);
+        } else if (rule->action.type == ACTION_LOG && rule->action.message[0] != '\0') {
+            printf("  message: %s\n", rule->action.message);
+        }
+    }
+
+    return matched;
+}
+
+static int run_command(int argc, char *argv[]) {
     const char *config_path = NULL;
     const char *watch_path = NULL;
     int dry_run = 0;
     config_t config;
     runtime_context_t context;
+    const char *watch_root = NULL;
 
     config.watch_path[0] = '\0';
     config.rule_count = 0;
 
-    for (int i = 1; i < argc; i++) {
+    for (int i = 0; i < argc; i++) {
         if (strcmp(argv[i], "--config") == 0) {
             if (i + 1 >= argc) {
-                print_usage(argv[0]);
+                print_usage("fileward");
                 return 1;
             }
             config_path = argv[++i];
@@ -132,38 +187,27 @@ int main(int argc, char *argv[]) {
         } else if (watch_path == NULL) {
             watch_path = argv[i];
         } else {
-            print_usage(argv[0]);
+            print_usage("fileward");
             return 1;
         }
     }
 
     if (config_path != NULL && watch_path != NULL) {
         fprintf(stderr, "Cannot use --config and explicit watch path together.\n");
-        print_usage(argv[0]);
+        print_usage("fileward");
         return 1;
     }
 
-    if (config_path == NULL && watch_path == NULL) {
-        print_usage(argv[0]);
+    if (load_watch_config(config_path, watch_path, &config, &watch_root) != 0) {
+        fprintf(stderr, "Failed to load watch configuration.\n");
         return 1;
-    }
-
-    log_init("fileward");
-
-    if (config_path != NULL) {
-        if (load_config(config_path, &config) != 0) {
-            return 1;
-        }
-        watch_path = config.watch_path;
-    } else {
-        strncpy(config.watch_path, watch_path, sizeof(config.watch_path));
-        config.watch_path[sizeof(config.watch_path) - 1] = '\0';
     }
 
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
+    signal(SIGHUP, handle_signal);
 
-    if (start_watcher(watch_path) != 0) {
+    if (start_watcher(watch_root) != 0) {
         return 1;
     }
 
@@ -173,13 +217,24 @@ int main(int argc, char *argv[]) {
     context.dry_run = dry_run;
 
     while (running) {
-        if (reload_config_if_requested(config_path, &config) != 0) {
-            stop_watcher();
-            return 1;
+        if (reload_requested && config_path != NULL) {
+            reload_requested = 0;
+            config_t new_config;
+            if (load_config(config_path, &new_config) != 0) {
+                log_error("failed to reload config: %s", config_path);
+                stop_watcher();
+                return 1;
+            }
+            if (strcmp(new_config.watch_path, config.watch_path) != 0) {
+                log_error("config reload changed watch path, restart required");
+                stop_watcher();
+                return 1;
+            }
+            config = new_config;
+            log_info("reloaded config: %s", config_path);
         }
 
         int (*event_callback)(const file_event_t *, void *) = config.rule_count > 0 ? handle_file_event : print_event_callback;
-
         if (watcher_process_events(500, event_callback, &context) != 0) {
             stop_watcher();
             return 1;
@@ -188,6 +243,157 @@ int main(int argc, char *argv[]) {
 
     stop_watcher();
     log_info("fileward stopped.");
+    return 0;
+}
+
+static int test_command(int argc, char *argv[]) {
+    const char *config_path = NULL;
+    const char *target_path = NULL;
+    config_t config;
+    const char *watch_root = NULL;
+
+    config.watch_path[0] = '\0';
+    config.rule_count = 0;
+
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "--config") == 0) {
+            if (i + 1 >= argc) {
+                print_usage("fileward");
+                return 1;
+            }
+            config_path = argv[++i];
+        } else if (target_path == NULL) {
+            target_path = argv[i];
+        } else {
+            print_usage("fileward");
+            return 1;
+        }
+    }
+
+    if (target_path == NULL) {
+        print_usage("fileward");
+        return 1;
+    }
+
+    struct stat st;
+    if (stat(target_path, &st) != 0) {
+        perror("path validation failed");
+        return 1;
+    }
+
+    printf("path exists: %s\n", target_path);
+    if (config_path == NULL) {
+        printf("no config loaded, test completed\n");
+        return 0;
+    }
+
+    if (load_config(config_path, &config) != 0) {
+        return 1;
+    }
+    watch_root = config.watch_path;
+
+    char relative[PATH_MAX];
+    int within = path_within_root(watch_root, target_path, relative, sizeof(relative));
+    if (within != 1) {
+        printf("path is outside watch root: %s\n", watch_root);
+        return 0;
+    }
+
+    printf("watch root: %s\n", watch_root);
+    printf("relative path: %s\n", relative);
+    printf("matching rules for created event:\n");
+    int matched = describe_matching_rules(relative, EVENT_CREATED, &config);
+    if (matched == 0) {
+        printf("  no rules match this path for created event\n");
+    }
 
     return 0;
+}
+
+static int explain_command(int argc, char *argv[]) {
+    const char *config_path = NULL;
+    const char *target_path = NULL;
+    const char *event_token = "created";
+    config_t config;
+    const char *watch_root = NULL;
+
+    config.watch_path[0] = '\0';
+    config.rule_count = 0;
+
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "--config") == 0) {
+            if (i + 1 >= argc) {
+                print_usage("fileward");
+                return 1;
+            }
+            config_path = argv[++i];
+        } else if (strcmp(argv[i], "--event") == 0) {
+            if (i + 1 >= argc) {
+                print_usage("fileward");
+                return 1;
+            }
+            event_token = argv[++i];
+        } else if (target_path == NULL) {
+            target_path = argv[i];
+        } else {
+            print_usage("fileward");
+            return 1;
+        }
+    }
+
+    if (target_path == NULL || config_path == NULL) {
+        fprintf(stderr, "explain requires --config <file> and <path>\n");
+        print_usage("fileward");
+        return 1;
+    }
+
+    if (load_config(config_path, &config) != 0) {
+        return 1;
+    }
+    watch_root = config.watch_path;
+
+    event_type_t event = parse_event_type(event_token);
+    if (event == EVENT_UNKNOWN) {
+        fprintf(stderr, "unknown event type: %s\n", event_token);
+        return 1;
+    }
+
+    char relative[PATH_MAX];
+    int within = path_within_root(watch_root, target_path, relative, sizeof(relative));
+    if (within != 1) {
+        fprintf(stderr, "path is outside watch root: %s\n", watch_root);
+        return 1;
+    }
+
+    printf("explain %s for %s\n", event_type_to_string(event), target_path);
+    printf("watch root: %s\n", watch_root);
+    printf("relative path: %s\n", relative);
+
+    int matched = describe_matching_rules(relative, event, &config);
+    if (matched == 0) {
+        printf("no matching rules\n");
+    }
+
+    return 0;
+}
+
+int main(int argc, char *argv[]) {
+    if (argc == 1 || is_help_arg(argv[1])) {
+        print_help(argv[0]);
+        return 0;
+    }
+
+    const char *command = argv[1];
+    if (strcmp(command, "run") == 0) {
+        return run_command(argc - 2, argv + 2);
+    }
+    if (strcmp(command, "test") == 0) {
+        return test_command(argc - 2, argv + 2);
+    }
+    if (strcmp(command, "explain") == 0) {
+        return explain_command(argc - 2, argv + 2);
+    }
+
+    /* Legacy default behavior: treat first argument as watch path or options for run. */
+    return run_command(argc - 1, argv + 1);
 }

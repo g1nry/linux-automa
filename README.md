@@ -63,25 +63,37 @@ meson compile -C build
 Запуск:
 
 ```bash
-./build/fileward ~/Downloads
+./build/fileward run ~/Downloads
 ```
 
 Запуск с конфигурационным файлом:
 
 ```bash
-./build/fileward --config fileward.conf
+./build/fileward run --config fileward.conf
 ```
 
 Запуск в режиме dry-run:
 
 ```bash
-./build/fileward --dry-run --config fileward.conf
+./build/fileward run --dry-run --config fileward.conf
 ```
 
 или без конфига:
 
 ```bash
-./build/fileward --dry-run ~/Downloads
+./build/fileward run --dry-run ~/Downloads
+```
+
+Проверка пути и правил:
+
+```bash
+./build/fileward test --config fileward.conf ~/Downloads/report.pdf
+```
+
+Объяснение совпадений:
+
+```bash
+./build/fileward explain --config fileward.conf --event created docs/report.pdf
 ```
 
 Перезагрузка конфигурации через SIGHUP:
