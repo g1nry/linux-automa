@@ -1,5 +1,5 @@
-#include "action.h"
-#include "log.h"
+#include <fileward/action.h>
+#include <fileward/log.h>
 
 #include <errno.h>
 #include <stdio.h>

@@ -1,5 +1,5 @@
-#include "watcher.h"
-#include "log.h"
+#include <fileward/watcher.h>
+#include <fileward/log.h>
 
 #include <dirent.h>
 #include <errno.h>

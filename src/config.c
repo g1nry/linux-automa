@@ -1,5 +1,5 @@
-#include "config.h"
-#include "log.h"
+#include <fileward/config.h>
+#include <fileward/log.h>
 
 #include <ctype.h>
 #include <errno.h>

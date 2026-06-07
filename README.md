@@ -6,6 +6,13 @@ Fileward — лёгкий локальный демон автоматизаци
 
 Проект начинается как небольшой watcher на базе `inotify`, но дальше должен вырасти в локальный event-driven automation daemon.
 
+## Структура проекта
+
+- `src/` — исходные файлы C
+- `include/fileward/` — заголовочные файлы
+- `systemd/` — юниты для user/systemd-инсталляции
+- `meson.build`, `Makefile`, `README.md` — корневой проектный каркас
+
 ## Идея
 
 ```text
@@ -157,7 +164,7 @@ make uninstall-user
 Для быстрой проверки компиляции:
 
 ```bash
-cc -std=c11 -Wall -Wextra -Isrc src/main.c src/watcher.c src/log.c -o /tmp/fileward
+cc -std=c11 -Wall -Wextra -Isrc -Iinclude src/main.c src/watcher.c src/log.c src/config.c src/action.c src/glob.c -o /tmp/fileward
 ```
 
 Запуск:

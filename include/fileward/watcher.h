@@ -1,7 +1,7 @@
 #ifndef FILEWARD_WATCHER_H
 #define FILEWARD_WATCHER_H
 
-#include <fileward/config.h>
+#include "config.h"
 
 typedef struct {
     event_type_t type;

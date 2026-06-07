@@ -3,6 +3,8 @@ project('fileward', 'c',
         license: 'MIT',
         default_options: ['warning_level=3', 'c_std=c11'])
 
+inc = include_directories('include')
+
 executable('fileward',
            'src/main.c',
            'src/watcher.c',
@@ -10,4 +12,5 @@ executable('fileward',
            'src/config.c',
            'src/action.c',
            'src/glob.c',
+           include_directories: inc,
            install: true)

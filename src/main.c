@@ -1,8 +1,8 @@
-#include "action.h"
-#include "config.h"
-#include "glob.h"
-#include "log.h"
-#include "watcher.h"
+#include <fileward/action.h>
+#include <fileward/config.h>
+#include <fileward/glob.h>
+#include <fileward/log.h>
+#include <fileward/watcher.h>
 
 #include <limits.h>
 #include <signal.h>
@@ -10,6 +10,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+
+#define EXIT_OK 0
+#define EXIT_USAGE 1
+#define EXIT_CONFIG 2
+#define EXIT_RUNTIME 3
 
 static volatile sig_atomic_t running = 1;
 static volatile sig_atomic_t reload_requested = 0;
@@ -69,6 +74,18 @@ static void print_usage(const char *program_name) {
     fprintf(stderr, "       %s run [--config <file>] [--dry-run] <directory_to_watch>\n", program_name);
     fprintf(stderr, "       %s test [--config <file>] <path>\n", program_name);
     fprintf(stderr, "       %s explain [--config <file>] [--event <event>] <path>\n", program_name);
+}
+
+static void print_run_usage(const char *program_name) {
+    fprintf(stderr, "Usage: %s run [--config <file>] [--dry-run] <directory_to_watch>\n", program_name);
+}
+
+static void print_test_usage(const char *program_name) {
+    fprintf(stderr, "Usage: %s test [--config <file>] <path>\n", program_name);
+}
+
+static void print_explain_usage(const char *program_name) {
+    fprintf(stderr, "Usage: %s explain --config <file> [--event <event>] <path>\n", program_name);
 }
 
 static void print_help(const char *program_name) {
@@ -176,10 +193,15 @@ static int run_command(int argc, char *argv[]) {
     config.rule_count = 0;
 
     for (int i = 0; i < argc; i++) {
+        if (is_help_arg(argv[i])) {
+            print_run_usage("fileward");
+            return EXIT_OK;
+        }
+
         if (strcmp(argv[i], "--config") == 0) {
             if (i + 1 >= argc) {
-                print_usage("fileward");
-                return 1;
+                print_run_usage("fileward");
+                return EXIT_USAGE;
             }
             config_path = argv[++i];
         } else if (strcmp(argv[i], "--dry-run") == 0) {
@@ -187,20 +209,20 @@ static int run_command(int argc, char *argv[]) {
         } else if (watch_path == NULL) {
             watch_path = argv[i];
         } else {
-            print_usage("fileward");
-            return 1;
+            print_run_usage("fileward");
+            return EXIT_USAGE;
         }
     }
 
     if (config_path != NULL && watch_path != NULL) {
         fprintf(stderr, "Cannot use --config and explicit watch path together.\n");
-        print_usage("fileward");
-        return 1;
+        print_run_usage("fileward");
+        return EXIT_USAGE;
     }
 
     if (load_watch_config(config_path, watch_path, &config, &watch_root) != 0) {
         fprintf(stderr, "Failed to load watch configuration.\n");
-        return 1;
+        return EXIT_CONFIG;
     }
 
     signal(SIGINT, handle_signal);
@@ -208,7 +230,7 @@ static int run_command(int argc, char *argv[]) {
     signal(SIGHUP, handle_signal);
 
     if (start_watcher(watch_root) != 0) {
-        return 1;
+        return EXIT_RUNTIME;
     }
 
     log_info("fileward started. Press Ctrl+C to stop.%s", dry_run ? " (dry-run mode)" : "");
@@ -223,12 +245,12 @@ static int run_command(int argc, char *argv[]) {
             if (load_config(config_path, &new_config) != 0) {
                 log_error("failed to reload config: %s", config_path);
                 stop_watcher();
-                return 1;
+                return EXIT_CONFIG;
             }
             if (strcmp(new_config.watch_path, config.watch_path) != 0) {
                 log_error("config reload changed watch path, restart required");
                 stop_watcher();
-                return 1;
+                return EXIT_RUNTIME;
             }
             config = new_config;
             log_info("reloaded config: %s", config_path);
@@ -237,7 +259,7 @@ static int run_command(int argc, char *argv[]) {
         int (*event_callback)(const file_event_t *, void *) = config.rule_count > 0 ? handle_file_event : print_event_callback;
         if (watcher_process_events(500, event_callback, &context) != 0) {
             stop_watcher();
-            return 1;
+            return EXIT_RUNTIME;
         }
     }
 
@@ -256,39 +278,44 @@ static int test_command(int argc, char *argv[]) {
     config.rule_count = 0;
 
     for (int i = 0; i < argc; i++) {
+        if (is_help_arg(argv[i])) {
+            print_test_usage("fileward");
+            return EXIT_OK;
+        }
+
         if (strcmp(argv[i], "--config") == 0) {
             if (i + 1 >= argc) {
-                print_usage("fileward");
-                return 1;
+                print_test_usage("fileward");
+                return EXIT_USAGE;
             }
             config_path = argv[++i];
         } else if (target_path == NULL) {
             target_path = argv[i];
         } else {
-            print_usage("fileward");
-            return 1;
+            print_test_usage("fileward");
+            return EXIT_USAGE;
         }
     }
 
     if (target_path == NULL) {
-        print_usage("fileward");
-        return 1;
+        print_test_usage("fileward");
+        return EXIT_USAGE;
     }
 
     struct stat st;
     if (stat(target_path, &st) != 0) {
         perror("path validation failed");
-        return 1;
+        return EXIT_RUNTIME;
     }
 
     printf("path exists: %s\n", target_path);
     if (config_path == NULL) {
         printf("no config loaded, test completed\n");
-        return 0;
+        return EXIT_OK;
     }
 
     if (load_config(config_path, &config) != 0) {
-        return 1;
+        return EXIT_CONFIG;
     }
     watch_root = config.watch_path;
 
@@ -296,7 +323,7 @@ static int test_command(int argc, char *argv[]) {
     int within = path_within_root(watch_root, target_path, relative, sizeof(relative));
     if (within != 1) {
         printf("path is outside watch root: %s\n", watch_root);
-        return 0;
+        return EXIT_USAGE;
     }
 
     printf("watch root: %s\n", watch_root);
@@ -321,48 +348,53 @@ static int explain_command(int argc, char *argv[]) {
     config.rule_count = 0;
 
     for (int i = 0; i < argc; i++) {
+        if (is_help_arg(argv[i])) {
+            print_explain_usage("fileward");
+            return EXIT_OK;
+        }
+
         if (strcmp(argv[i], "--config") == 0) {
             if (i + 1 >= argc) {
-                print_usage("fileward");
-                return 1;
+                print_explain_usage("fileward");
+                return EXIT_USAGE;
             }
             config_path = argv[++i];
         } else if (strcmp(argv[i], "--event") == 0) {
             if (i + 1 >= argc) {
-                print_usage("fileward");
-                return 1;
+                print_explain_usage("fileward");
+                return EXIT_USAGE;
             }
             event_token = argv[++i];
         } else if (target_path == NULL) {
             target_path = argv[i];
         } else {
-            print_usage("fileward");
-            return 1;
+            print_explain_usage("fileward");
+            return EXIT_USAGE;
         }
     }
 
     if (target_path == NULL || config_path == NULL) {
         fprintf(stderr, "explain requires --config <file> and <path>\n");
-        print_usage("fileward");
-        return 1;
+        print_explain_usage("fileward");
+        return EXIT_USAGE;
     }
 
     if (load_config(config_path, &config) != 0) {
-        return 1;
+        return EXIT_CONFIG;
     }
     watch_root = config.watch_path;
 
     event_type_t event = parse_event_type(event_token);
     if (event == EVENT_UNKNOWN) {
         fprintf(stderr, "unknown event type: %s\n", event_token);
-        return 1;
+        return EXIT_USAGE;
     }
 
     char relative[PATH_MAX];
     int within = path_within_root(watch_root, target_path, relative, sizeof(relative));
     if (within != 1) {
         fprintf(stderr, "path is outside watch root: %s\n", watch_root);
-        return 1;
+        return EXIT_USAGE;
     }
 
     printf("explain %s for %s\n", event_type_to_string(event), target_path);
@@ -380,7 +412,7 @@ static int explain_command(int argc, char *argv[]) {
 int main(int argc, char *argv[]) {
     if (argc == 1 || is_help_arg(argv[1])) {
         print_help(argv[0]);
-        return 0;
+        return EXIT_OK;
     }
 
     const char *command = argv[1];
@@ -392,6 +424,10 @@ int main(int argc, char *argv[]) {
     }
     if (strcmp(command, "explain") == 0) {
         return explain_command(argc - 2, argv + 2);
+    }
+    if (strcmp(command, "help") == 0) {
+        print_help(argv[0]);
+        return EXIT_OK;
     }
 
     /* Legacy default behavior: treat first argument as watch path or options for run. */
