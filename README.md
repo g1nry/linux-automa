@@ -226,13 +226,38 @@ cc -std=c11 -Wall -Wextra -Isrc -Iinclude src/main.c src/watcher.c src/log.c src
 - сделать проект удобным для повседневного использования как локальный automation daemon;
 - обеспечить стабильный запуск через `systemd`, с reload, health-check и понятной документацией.
 
-## Пример будущего конфига
+## Пример конфигурации
 
 ```text
 watch ~/Downloads
 
 when created *.pdf move ~/Documents/PDF
-when modified *.c log "C source updated"
+when created *.txt log "text file created"
+```
+
+Минимальная проверка в одну секунду:
+
+```bash
+./build/fileward test --config example.conf ~/Downloads/report.pdf
+./build/fileward explain --config example.conf --event created ~/Downloads/report.pdf
+```
+
+Быстрый запуск в фоне:
+
+```bash
+./build/fileward start --daemon --config example.conf --pidfile /tmp/fileward.pid --state-file /tmp/fileward.state ~/Downloads
+```
+
+Проверка состояния:
+
+```bash
+./build/fileward status --pidfile /tmp/fileward.pid
+```
+
+Остановка:
+
+```bash
+./build/fileward stop --pidfile /tmp/fileward.pid
 ```
 
 В этом этапе конфигурация поддерживает:
