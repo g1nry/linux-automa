@@ -311,7 +311,7 @@ static int dispatch_event(runtime_context_t *context, const file_event_t *event)
     }
 
     if (event->filename[0] == '\0') {
-        log_warn("received event without filename");
+        log_debug("ignoring event without filename");
         return 0;
     }
 
