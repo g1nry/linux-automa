@@ -510,8 +510,8 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
     runtime_context_t context;
     const char *watch_root = NULL;
 
-    config.watch_path[0] = '\0';
-    config.rule_count = 0;
+    memset(&config, 0, sizeof(config));
+    memset(&context, 0, sizeof(context));
 
     for (int i = 0; i < argc; i++) {
         if (is_help_arg(argv[i])) {
