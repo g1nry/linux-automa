@@ -384,11 +384,47 @@ static int handle_file_event(const file_event_t *event, void *user_data) {
     return queue_event(context, event);
 }
 
+static int expand_path(const char *path, char *out, size_t out_size) {
+    if (path == NULL || out == NULL || out_size == 0) {
+        return -1;
+    }
+
+    if (path[0] == '~' && (path[1] == '/' || path[1] == '\0')) {
+        const char *home = getenv("HOME");
+        if (home == NULL) {
+            return -1;
+        }
+
+        if (snprintf(out, out_size, "%s%s", home, path + 1) >= (int)out_size) {
+            return -1;
+        }
+        return 0;
+    }
+
+    if (strlen(path) >= out_size) {
+        return -1;
+    }
+
+    strcpy(out, path);
+    return 0;
+}
+
 static int load_watch_config(const char *config_path, const char *watch_path, config_t *config, const char **out_watch_path) {
+    char expanded_watch_path[PATH_MAX];
+
     if (config_path != NULL) {
         if (load_config(config_path, config) != 0) {
             return -1;
         }
+
+        if (watch_path != NULL) {
+            if (expand_path(watch_path, expanded_watch_path, sizeof(expanded_watch_path)) != 0) {
+                return -1;
+            }
+            strncpy(config->watch_path, expanded_watch_path, sizeof(config->watch_path));
+            config->watch_path[sizeof(config->watch_path) - 1] = '\0';
+        }
+
         *out_watch_path = config->watch_path;
         return 0;
     }
@@ -399,7 +435,10 @@ static int load_watch_config(const char *config_path, const char *watch_path, co
 
     config->watch_path[0] = '\0';
     config->rule_count = 0;
-    strncpy(config->watch_path, watch_path, sizeof(config->watch_path));
+    if (expand_path(watch_path, expanded_watch_path, sizeof(expanded_watch_path)) != 0) {
+        return -1;
+    }
+    strncpy(config->watch_path, expanded_watch_path, sizeof(config->watch_path));
     config->watch_path[sizeof(config->watch_path) - 1] = '\0';
     *out_watch_path = config->watch_path;
     return 0;
@@ -514,12 +553,6 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
             print_run_usage("fileward");
             return EXIT_USAGE;
         }
-    }
-
-    if (config_path != NULL && watch_path != NULL) {
-        fprintf(stderr, "Cannot use --config and explicit watch path together.\n");
-        print_run_usage("fileward");
-        return EXIT_USAGE;
     }
 
     if (load_watch_config(config_path, watch_path, &config, &watch_root) != 0) {
@@ -730,13 +763,19 @@ static int test_command(int argc, char *argv[]) {
         return EXIT_USAGE;
     }
 
+    char expanded_target[PATH_MAX];
+    const char *resolved_target = target_path;
+    if (expand_path(target_path, expanded_target, sizeof(expanded_target)) == 0) {
+        resolved_target = expanded_target;
+    }
+
     struct stat st;
-    if (stat(target_path, &st) != 0) {
+    if (stat(resolved_target, &st) != 0) {
         perror("path validation failed");
         return EXIT_RUNTIME;
     }
 
-    printf("path exists: %s\n", target_path);
+    printf("path exists: %s\n", resolved_target);
     if (config_path == NULL) {
         printf("no config loaded, test completed\n");
         return EXIT_OK;
@@ -748,7 +787,7 @@ static int test_command(int argc, char *argv[]) {
     watch_root = config.watch_path;
 
     char relative[PATH_MAX];
-    int within = path_within_root(watch_root, target_path, relative, sizeof(relative));
+    int within = path_within_root(watch_root, resolved_target, relative, sizeof(relative));
     if (within != 1) {
         printf("path is outside watch root: %s\n", watch_root);
         return EXIT_USAGE;
@@ -818,14 +857,20 @@ static int explain_command(int argc, char *argv[]) {
         return EXIT_USAGE;
     }
 
+    char expanded_target[PATH_MAX];
+    const char *resolved_target = target_path;
+    if (expand_path(target_path, expanded_target, sizeof(expanded_target)) == 0) {
+        resolved_target = expanded_target;
+    }
+
     char relative[PATH_MAX];
-    int within = path_within_root(watch_root, target_path, relative, sizeof(relative));
+    int within = path_within_root(watch_root, resolved_target, relative, sizeof(relative));
     if (within != 1) {
         fprintf(stderr, "path is outside watch root: %s\n", watch_root);
         return EXIT_USAGE;
     }
 
-    printf("explain %s for %s\n", event_type_to_string(event), target_path);
+    printf("explain %s for %s\n", event_type_to_string(event), resolved_target);
     printf("watch root: %s\n", watch_root);
     printf("relative path: %s\n", relative);
 
