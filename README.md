@@ -35,7 +35,7 @@ C-файл изменился в проекте       -> запустить те
 
 ## Текущий статус
 
-Проект находится на раннем этапе разработки и пока движется к `v0.1`.
+Проект находится на раннем этапе разработки и пока движется к `v0.6`.
 
 Текущий фокус:
 
@@ -183,45 +183,81 @@ cc -std=c11 -Wall -Wextra -Isrc -Iinclude src/main.c src/watcher.c src/log.c src
 
 ## Roadmap
 
-### v0.1 — базовый watcher
-
-- Принимать путь к директории аргументом.
-- Следить за директорией через `inotify`.
-- Печатать файловые события.
-- Обрабатывать `SIGINT` и `SIGTERM`.
-
-### v0.2 — конфигурация
-
-- Добавить `--config`.
-- Реализовать простой формат конфига.
-- Поддержать директиву `watch`.
-- Поддержать простые правила `when`.
-
-### v0.3 — действия
-
-- Добавить действие `log`.
-- Добавить действие `move`.
-- Добавить режим `dry-run`.
-
-### v0.4 — CLI
-
-- Добавить `fileward test <path>`.
-- Добавить explain-style вывод.
-- Улучшить help и коды возврата.
-
 ### v0.5 — сервисный режим
 
-- Добавить `systemd` unit-файлы.
-- Добавить поддержку лог-файла.
-- Добавить перезагрузку конфига через `SIGHUP`.
+- добавить `systemd` unit-файлы;
+- добавить поддержку лог-файла;
+- добавить перезагрузку конфига через `SIGHUP`.
 
-## Пример будущего конфига
+### v0.6 — daemon core
+
+- добавить foreground/background режимы запуска;
+- добавить pidfile/lock для единственного экземпляра;
+- добавить команды `start`, `stop`, `status`, `reload`;
+- вести журнал обработанных событий в state-file;
+- обрабатывать события через простую очередь в основном цикле;
+- сделать запуск более похожим на настоящий local automation daemon.
+
+### v0.7 — richer rules
+
+- добавить условия по размеру, времени изменения, имени и расширению;
+- поддержать несколько правил на одно событие;
+- поддержать приоритеты правил и порядок выполнения;
+- добавить поддержку `ignore` и `allow`/`deny` списков.
+
+### v0.8 — richer actions
+
+- добавить действия `copy`, `archive`, `exec`;
+- добавить безопасную обработку конфликтов файлов;
+- добавить retry/backoff для временных ошибок;
+- добавить поддержку шаблонов для путей назначения.
+
+### v0.9 — observability
+
+- сделать структурированные логи;
+- добавить метрики: число событий, обработанных правил, ошибок;
+- добавить историю выполненных действий;
+- добавить команду `history`/`stats`.
+
+### v1.0 — local automation engine
+
+- сделать архитектуру расширяемой: watcher, dispatcher, executor, state;
+- поддержать plugin-like или modular action handlers;
+- сделать проект удобным для повседневного использования как локальный automation daemon;
+- обеспечить стабильный запуск через `systemd`, с reload, health-check и понятной документацией.
+
+## Пример конфигурации
 
 ```text
 watch ~/Downloads
 
 when created *.pdf move ~/Documents/PDF
-when modified *.c log "C source updated"
+when created *.txt log "text file created"
+```
+
+Минимальная проверка в одну секунду:
+
+```bash
+./build/fileward test --config example.conf ~/Downloads/report.pdf
+./build/fileward explain --config example.conf --event created ~/Downloads/report.pdf
+```
+
+Быстрый запуск в фоне:
+
+```bash
+./build/fileward start --daemon --config example.conf --pidfile /tmp/fileward.pid --state-file /tmp/fileward.state ~/Downloads
+```
+
+Проверка состояния:
+
+```bash
+./build/fileward status --pidfile /tmp/fileward.pid
+```
+
+Остановка:
+
+```bash
+./build/fileward stop --pidfile /tmp/fileward.pid
 ```
 
 В этом этапе конфигурация поддерживает:

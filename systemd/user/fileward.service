@@ -5,7 +5,8 @@ ConditionPathIsDirectory=%h/Downloads
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/fileward %h/Downloads
+ExecStart=%h/.local/bin/fileward start --daemon --pidfile %h/.cache/fileward.pid --log-file %h/.local/share/fileward.log --state-file %h/.local/share/fileward.state %h/Downloads
+ExecReload=%h/.local/bin/fileward reload --pidfile %h/.cache/fileward.pid
 Restart=on-failure
 RestartSec=2s
 

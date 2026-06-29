@@ -271,6 +271,11 @@ int watcher_process_events(int timeout_ms, int (*callback)(const file_event_t *,
             }
         }
 
+        if (file_event.filename[0] == '\0' && !(event->mask & IN_CREATE) && !(event->mask & IN_MOVED_TO) && !(event->mask & IN_DELETE) && !(event->mask & IN_MOVED_FROM) && !(event->mask & IN_MODIFY)) {
+            offset += EVENT_SIZE + event->len;
+            continue;
+        }
+
         if (event->mask & IN_ISDIR) {
             if ((event->mask & IN_CREATE) || (event->mask & IN_MOVED_TO)) {
                 const char *base = watch_path_for_wd(event->wd);

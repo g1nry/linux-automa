@@ -4,6 +4,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static char *trim_whitespace(char *s) {
@@ -23,6 +24,31 @@ static char *trim_whitespace(char *s) {
     }
 
     return s;
+}
+
+static int expand_tilde_path(const char *path, char *out, size_t out_size) {
+    if (path == NULL || out == NULL || out_size == 0) {
+        return -1;
+    }
+
+    if (path[0] == '~' && (path[1] == '/' || path[1] == '\0')) {
+        const char *home = getenv("HOME");
+        if (home == NULL) {
+            return -1;
+        }
+
+        if (snprintf(out, out_size, "%s%s", home, path + 1) >= (int)out_size) {
+            return -1;
+        }
+        return 0;
+    }
+
+    if (strlen(path) >= out_size) {
+        return -1;
+    }
+
+    strcpy(out, path);
+    return 0;
 }
 
 static int parse_word(char **text, char *out, size_t out_size) {
@@ -154,13 +180,20 @@ int load_config(const char *path, config_t *config) {
                 continue;
             }
 
-            if (strlen(text) >= sizeof(config->watch_path)) {
+            char expanded_watch_path[PATH_MAX];
+            if (expand_tilde_path(text, expanded_watch_path, sizeof(expanded_watch_path)) != 0) {
+                log_error("config %s:%d: watch path is too long or invalid", path, line_no);
+                fclose(file);
+                return -1;
+            }
+
+            if (strlen(expanded_watch_path) >= sizeof(config->watch_path)) {
                 log_error("config %s:%d: watch path is too long", path, line_no);
                 fclose(file);
                 return -1;
             }
 
-            strcpy(config->watch_path, text);
+            strcpy(config->watch_path, expanded_watch_path);
             continue;
         }
 
