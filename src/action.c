@@ -135,7 +135,6 @@ int execute_action(const action_t *action, const char *watch_path, const char *f
     }
 
     char source[PATH_MAX];
-    char target[PATH_MAX];
 
     switch (action->type) {
     case ACTION_LOG: {
