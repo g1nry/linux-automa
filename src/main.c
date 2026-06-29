@@ -11,12 +11,18 @@
 #include <fileward/log.h>
 #include <fileward/watcher.h>
 
+#include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
 
 #define EXIT_OK 0
 #define EXIT_USAGE 1
@@ -78,13 +84,17 @@ static int is_help_arg(const char *arg) {
 
 static void print_usage(const char *program_name) {
     fprintf(stderr, "Usage: %s <subcommand> [options]\n", program_name);
-    fprintf(stderr, "       %s run [--config <file>] [--dry-run] <directory_to_watch>\n", program_name);
+    fprintf(stderr, "       %s run [--config <file>] [--dry-run] [--daemon] [--pidfile <file>] [--log-file <file>] [--state-file <file>] <directory_to_watch>\n", program_name);
+    fprintf(stderr, "       %s start [--config <file>] [--dry-run] [--pidfile <file>] [--log-file <file>] [--state-file <file>] <directory_to_watch>\n", program_name);
+    fprintf(stderr, "       %s stop [--pidfile <file>]\n", program_name);
+    fprintf(stderr, "       %s status [--pidfile <file>]\n", program_name);
+    fprintf(stderr, "       %s reload [--pidfile <file>]\n", program_name);
     fprintf(stderr, "       %s test [--config <file>] <path>\n", program_name);
     fprintf(stderr, "       %s explain [--config <file>] [--event <event>] <path>\n", program_name);
 }
 
 static void print_run_usage(const char *program_name) {
-    fprintf(stderr, "Usage: %s run [--config <file>] [--dry-run] <directory_to_watch>\n", program_name);
+    fprintf(stderr, "Usage: %s run [--config <file>] [--dry-run] [--daemon] [--pidfile <file>] [--log-file <file>] [--state-file <file>] <directory_to_watch>\n", program_name);
 }
 
 static void print_test_usage(const char *program_name) {
@@ -98,16 +108,24 @@ static void print_explain_usage(const char *program_name) {
 static void print_help(const char *program_name) {
     print_usage(program_name);
     fprintf(stderr, "\nSubcommands:\n");
-    fprintf(stderr, "  run      start the watcher (default when no subcommand is provided)\n");
+    fprintf(stderr, "  run      start the watcher in the foreground\n");
+    fprintf(stderr, "  start    start the watcher as a background daemon\n");
+    fprintf(stderr, "  stop     stop a running daemon\n");
+    fprintf(stderr, "  status   show whether the daemon is running\n");
+    fprintf(stderr, "  reload   reload config for an already-running daemon\n");
     fprintf(stderr, "  test     validate a path and show rule matches for a config\n");
     fprintf(stderr, "  explain  explain which rules would match a path for an event\n");
     fprintf(stderr, "\nOptions:\n");
-    fprintf(stderr, "  --config <file>  load rules from a config file\n");
-    fprintf(stderr, "  --dry-run        do not execute actions when running\n");
-    fprintf(stderr, "  --event <event>  event type for explain: created, modified, deleted, moved_from, moved_to\n");
+    fprintf(stderr, "  --config <file>    load rules from a config file\n");
+    fprintf(stderr, "  --dry-run          do not execute actions when running\n");
+    fprintf(stderr, "  --daemon           detach and run in the background\n");
+    fprintf(stderr, "  --pidfile <file>   write/read the daemon pidfile\n");
+    fprintf(stderr, "  --log-file <file>  redirect logs to a file when daemonized\n");
+    fprintf(stderr, "  --state-file <file> append handled events to a journal file\n");
+    fprintf(stderr, "  --event <event>    event type for explain: created, modified, deleted, moved_from, moved_to\n");
     fprintf(stderr, "\nExamples:\n");
     fprintf(stderr, "  %s run --config fileward.conf\n", program_name);
-    fprintf(stderr, "  %s run --dry-run ~/Downloads\n", program_name);
+    fprintf(stderr, "  %s start --daemon --config fileward.conf ~/Downloads\n", program_name);
     fprintf(stderr, "  %s test --config fileward.conf ~/Downloads/report.pdf\n", program_name);
     fprintf(stderr, "  %s explain --config fileward.conf --event created docs/report.pdf\n", program_name);
 }
@@ -115,7 +133,161 @@ static void print_help(const char *program_name) {
 typedef struct {
     const config_t *config;
     int dry_run;
+    const char *state_file_path;
 } runtime_context_t;
+
+static int write_pidfile(const char *pidfile_path, pid_t pid) {
+    if (pidfile_path == NULL || pidfile_path[0] == '\0') {
+        return 0;
+    }
+
+    FILE *fp = fopen(pidfile_path, "w");
+    if (fp == NULL) {
+        fprintf(stderr, "failed to open pidfile '%s': %s\n", pidfile_path, strerror(errno));
+        return -1;
+    }
+
+    fprintf(fp, "%ld\n", (long)pid);
+    fclose(fp);
+    return 0;
+}
+
+static int remove_pidfile(const char *pidfile_path) {
+    if (pidfile_path == NULL || pidfile_path[0] == '\0') {
+        return 0;
+    }
+
+    if (unlink(pidfile_path) != 0 && errno != ENOENT) {
+        fprintf(stderr, "failed to remove pidfile '%s': %s\n", pidfile_path, strerror(errno));
+        return -1;
+    }
+
+    return 0;
+}
+
+static int read_pidfile(const char *pidfile_path, pid_t *pid_out) {
+    if (pidfile_path == NULL || pidfile_path[0] == '\0') {
+        return -1;
+    }
+
+    FILE *fp = fopen(pidfile_path, "r");
+    if (fp == NULL) {
+        return -1;
+    }
+
+    long pid_value = 0;
+    if (fscanf(fp, "%ld", &pid_value) != 1) {
+        fclose(fp);
+        return -1;
+    }
+
+    fclose(fp);
+    *pid_out = (pid_t)pid_value;
+    return 0;
+}
+
+static int is_pid_running(pid_t pid) {
+    if (pid <= 0) {
+        return 0;
+    }
+
+    return kill(pid, 0) == 0 || errno == EPERM;
+}
+
+static int redirect_output(const char *log_file_path) {
+    if (log_file_path == NULL || log_file_path[0] == '\0') {
+        int devnull = open("/dev/null", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (devnull < 0) {
+            return -1;
+        }
+        dup2(devnull, STDOUT_FILENO);
+        dup2(devnull, STDERR_FILENO);
+        close(devnull);
+        return 0;
+    }
+
+    int log_fd = open(log_file_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (log_fd < 0) {
+        return -1;
+    }
+
+    dup2(log_fd, STDOUT_FILENO);
+    dup2(log_fd, STDERR_FILENO);
+    close(log_fd);
+    return 0;
+}
+
+static int daemonize_process(const char *pidfile_path, const char *log_file_path) {
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "fork failed: %s\n", strerror(errno));
+        return -1;
+    }
+
+    if (pid > 0) {
+        exit(EXIT_OK);
+    }
+
+    if (setsid() < 0) {
+        fprintf(stderr, "setsid failed: %s\n", strerror(errno));
+        return -1;
+    }
+
+    signal(SIGHUP, SIG_IGN);
+
+    pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "second fork failed: %s\n", strerror(errno));
+        return -1;
+    }
+
+    if (pid > 0) {
+        exit(EXIT_OK);
+    }
+
+    if (chdir("/") != 0) {
+        fprintf(stderr, "chdir failed: %s\n", strerror(errno));
+        return -1;
+    }
+
+    close(STDIN_FILENO);
+    if (redirect_output(log_file_path) != 0) {
+        fprintf(stderr, "failed to redirect output: %s\n", strerror(errno));
+        return -1;
+    }
+
+    umask(0);
+    if (write_pidfile(pidfile_path, getpid()) != 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int append_state_event(const char *state_file_path, const char *watch_root, const char *filename, event_type_t event, const char *action_name) {
+    if (state_file_path == NULL || state_file_path[0] == '\0') {
+        return 0;
+    }
+
+    FILE *fp = fopen(state_file_path, "a");
+    if (fp == NULL) {
+        fprintf(stderr, "failed to open state file '%s': %s\n", state_file_path, strerror(errno));
+        return -1;
+    }
+
+    time_t now = time(NULL);
+    char timestamp[32];
+    struct tm *time_info = localtime(&now);
+    if (time_info != NULL) {
+        strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", time_info);
+    } else {
+        strcpy(timestamp, "unknown");
+    }
+
+    fprintf(fp, "%s\t%s\t%s\t%s\t%s\n", timestamp, event_type_to_string(event), watch_root != NULL ? watch_root : "-", filename, action_name != NULL ? action_name : "unknown");
+    fclose(fp);
+    return 0;
+}
 
 static int print_event_callback(const file_event_t *event, void *user_data) {
     (void)user_data;
@@ -158,6 +330,10 @@ static int handle_file_event(const file_event_t *event, void *user_data) {
 
         matched++;
         execute_action(&rule->action, context->config->watch_path, event->filename, event->type, context->dry_run);
+        if (context->state_file_path != NULL && context->state_file_path[0] != '\0') {
+            const char *action_name = rule->action.type == ACTION_LOG ? "log" : "move";
+            append_state_event(context->state_file_path, context->config->watch_path, event->filename, event->type, action_name);
+        }
     }
 
     if (matched == 0) {
@@ -243,9 +419,12 @@ static int describe_matching_rules(const char *relative_path, event_type_t event
     return matched;
 }
 
-static int run_command(int argc, char *argv[]) {
+static int run_command(int argc, char *argv[], int daemon_mode) {
     const char *config_path = NULL;
     const char *watch_path = NULL;
+    const char *pidfile_path = NULL;
+    const char *log_file_path = NULL;
+    const char *state_file_path = NULL;
     int dry_run = 0;
     config_t config;
     runtime_context_t context;
@@ -268,6 +447,26 @@ static int run_command(int argc, char *argv[]) {
             config_path = argv[++i];
         } else if (strcmp(argv[i], "--dry-run") == 0) {
             dry_run = 1;
+        } else if (strcmp(argv[i], "--daemon") == 0) {
+            daemon_mode = 1;
+        } else if (strcmp(argv[i], "--pidfile") == 0) {
+            if (i + 1 >= argc) {
+                print_run_usage("fileward");
+                return EXIT_USAGE;
+            }
+            pidfile_path = argv[++i];
+        } else if (strcmp(argv[i], "--log-file") == 0) {
+            if (i + 1 >= argc) {
+                print_run_usage("fileward");
+                return EXIT_USAGE;
+            }
+            log_file_path = argv[++i];
+        } else if (strcmp(argv[i], "--state-file") == 0) {
+            if (i + 1 >= argc) {
+                print_run_usage("fileward");
+                return EXIT_USAGE;
+            }
+            state_file_path = argv[++i];
         } else if (watch_path == NULL) {
             watch_path = argv[i];
         } else {
@@ -287,11 +486,34 @@ static int run_command(int argc, char *argv[]) {
         return EXIT_CONFIG;
     }
 
+    if (daemon_mode) {
+        if (pidfile_path == NULL) {
+            pidfile_path = "/tmp/fileward.pid";
+        }
+
+        pid_t existing_pid = 0;
+        if (read_pidfile(pidfile_path, &existing_pid) == 0 && is_pid_running(existing_pid)) {
+            fprintf(stderr, "fileward is already running (pid %ld)\n", (long)existing_pid);
+            return EXIT_RUNTIME;
+        }
+
+        if (daemonize_process(pidfile_path, log_file_path) != 0) {
+            return EXIT_RUNTIME;
+        }
+    } else if (pidfile_path != NULL) {
+        if (write_pidfile(pidfile_path, getpid()) != 0) {
+            return EXIT_RUNTIME;
+        }
+    }
+
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
     signal(SIGHUP, handle_signal);
 
     if (start_watcher(watch_root) != 0) {
+        if (daemon_mode) {
+            remove_pidfile(pidfile_path);
+        }
         return EXIT_RUNTIME;
     }
 
@@ -299,6 +521,7 @@ static int run_command(int argc, char *argv[]) {
 
     context.config = &config;
     context.dry_run = dry_run;
+    context.state_file_path = state_file_path;
 
     while (running) {
         if (reload_requested && config_path != NULL) {
@@ -307,11 +530,17 @@ static int run_command(int argc, char *argv[]) {
             if (load_config(config_path, &new_config) != 0) {
                 log_error("failed to reload config: %s", config_path);
                 stop_watcher();
+                if (daemon_mode) {
+                    remove_pidfile(pidfile_path);
+                }
                 return EXIT_CONFIG;
             }
             if (strcmp(new_config.watch_path, config.watch_path) != 0) {
                 log_error("config reload changed watch path, restart required");
                 stop_watcher();
+                if (daemon_mode) {
+                    remove_pidfile(pidfile_path);
+                }
                 return EXIT_RUNTIME;
             }
             config = new_config;
@@ -321,13 +550,105 @@ static int run_command(int argc, char *argv[]) {
         int (*event_callback)(const file_event_t *, void *) = config.rule_count > 0 ? handle_file_event : print_event_callback;
         if (watcher_process_events(500, event_callback, &context) != 0) {
             stop_watcher();
+            if (daemon_mode) {
+                remove_pidfile(pidfile_path);
+            }
             return EXIT_RUNTIME;
         }
     }
 
     stop_watcher();
+    if (daemon_mode) {
+        remove_pidfile(pidfile_path);
+    }
     log_info("fileward stopped.");
-    return 0;
+    return EXIT_OK;
+}
+
+static int stop_command(int argc, char *argv[]) {
+    const char *pidfile_path = "/tmp/fileward.pid";
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "--pidfile") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "missing value for --pidfile\n");
+                return EXIT_USAGE;
+            }
+            pidfile_path = argv[++i];
+        } else {
+            fprintf(stderr, "unexpected argument: %s\n", argv[i]);
+            return EXIT_USAGE;
+        }
+    }
+
+    pid_t pid = 0;
+    if (read_pidfile(pidfile_path, &pid) != 0 || !is_pid_running(pid)) {
+        fprintf(stderr, "fileward is not running\n");
+        return EXIT_RUNTIME;
+    }
+
+    if (kill(pid, SIGTERM) != 0) {
+        fprintf(stderr, "failed to signal process %ld: %s\n", (long)pid, strerror(errno));
+        return EXIT_RUNTIME;
+    }
+
+    remove_pidfile(pidfile_path);
+    printf("stopped fileward (pid %ld)\n", (long)pid);
+    return EXIT_OK;
+}
+
+static int status_command(int argc, char *argv[]) {
+    const char *pidfile_path = "/tmp/fileward.pid";
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "--pidfile") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "missing value for --pidfile\n");
+                return EXIT_USAGE;
+            }
+            pidfile_path = argv[++i];
+        } else {
+            fprintf(stderr, "unexpected argument: %s\n", argv[i]);
+            return EXIT_USAGE;
+        }
+    }
+
+    pid_t pid = 0;
+    if (read_pidfile(pidfile_path, &pid) != 0 || !is_pid_running(pid)) {
+        printf("fileward: stopped\n");
+        return EXIT_OK;
+    }
+
+    printf("fileward: running (pid %ld)\n", (long)pid);
+    return EXIT_OK;
+}
+
+static int reload_command(int argc, char *argv[]) {
+    const char *pidfile_path = "/tmp/fileward.pid";
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "--pidfile") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "missing value for --pidfile\n");
+                return EXIT_USAGE;
+            }
+            pidfile_path = argv[++i];
+        } else {
+            fprintf(stderr, "unexpected argument: %s\n", argv[i]);
+            return EXIT_USAGE;
+        }
+    }
+
+    pid_t pid = 0;
+    if (read_pidfile(pidfile_path, &pid) != 0 || !is_pid_running(pid)) {
+        fprintf(stderr, "fileward is not running\n");
+        return EXIT_RUNTIME;
+    }
+
+    if (kill(pid, SIGHUP) != 0) {
+        fprintf(stderr, "failed to reload process %ld: %s\n", (long)pid, strerror(errno));
+        return EXIT_RUNTIME;
+    }
+
+    printf("reload requested for pid %ld\n", (long)pid);
+    return EXIT_OK;
 }
 
 static int test_command(int argc, char *argv[]) {
@@ -479,7 +800,19 @@ int main(int argc, char *argv[]) {
 
     const char *command = argv[1];
     if (strcmp(command, "run") == 0) {
-        return run_command(argc - 2, argv + 2);
+        return run_command(argc - 2, argv + 2, 0);
+    }
+    if (strcmp(command, "start") == 0) {
+        return run_command(argc - 2, argv + 2, 1);
+    }
+    if (strcmp(command, "stop") == 0) {
+        return stop_command(argc - 2, argv + 2);
+    }
+    if (strcmp(command, "status") == 0) {
+        return status_command(argc - 2, argv + 2);
+    }
+    if (strcmp(command, "reload") == 0) {
+        return reload_command(argc - 2, argv + 2);
     }
     if (strcmp(command, "test") == 0) {
         return test_command(argc - 2, argv + 2);
@@ -493,5 +826,5 @@ int main(int argc, char *argv[]) {
     }
 
     /* Legacy default behavior: treat first argument as watch path or options for run. */
-    return run_command(argc - 1, argv + 1);
+    return run_command(argc - 1, argv + 1, 0);
 }
