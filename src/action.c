@@ -8,6 +8,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 static int expand_tilde(const char *path, char *out, size_t out_size) {
@@ -141,11 +142,13 @@ int execute_action(const action_t *action, const char *watch_path, const char *f
         }
 
         const char *base = basename_of(filename);
-        written = snprintf(target, sizeof(target), "%s/%s", target, base);
-        if (written < 0 || (size_t)written >= sizeof(target)) {
+        char destination[PATH_MAX];
+        written = snprintf(destination, sizeof(destination), "%s/%s", target, base);
+        if (written < 0 || (size_t)written >= sizeof(destination)) {
             log_error("destination path is too long");
             return -1;
         }
+        strcpy(target, destination);
 
         if (dry_run) {
             log_info("dry-run: would move '%s' -> '%s'", source, target);
@@ -167,7 +170,8 @@ int execute_action(const action_t *action, const char *watch_path, const char *f
                 break;
             }
 
-            usleep(100000);
+            struct timespec delay = {0, 100000000L};
+            nanosleep(&delay, NULL);
         }
 
         if (access(target, F_OK) == 0) {
