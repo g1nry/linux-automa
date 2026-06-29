@@ -71,13 +71,39 @@ static int ensure_directory(const char *path) {
         return -1;
     }
 
-    if (mkdir(path, 0755) == 0) {
+    char buffer[PATH_MAX];
+    size_t len = strlen(path);
+
+    if (len == 0 || len >= sizeof(buffer)) {
+        return -1;
+    }
+
+    strncpy(buffer, path, sizeof(buffer));
+    buffer[sizeof(buffer) - 1] = '\0';
+
+    if (buffer[len - 1] == '/') {
+        buffer[len - 1] = '\0';
+    }
+
+    for (char *p = buffer + 1; *p != '\0'; p++) {
+        if (*p != '/') {
+            continue;
+        }
+
+        *p = '\0';
+        if (mkdir(buffer, 0755) != 0 && errno != EEXIST) {
+            return -1;
+        }
+        *p = '/';
+    }
+
+    if (mkdir(buffer, 0755) == 0) {
         return 0;
     }
 
     if (errno == EEXIST) {
         struct stat st;
-        if (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+        if (stat(buffer, &st) == 0 && S_ISDIR(st.st_mode)) {
             return 0;
         }
     }
@@ -135,7 +161,8 @@ int execute_action(const action_t *action, const char *watch_path, const char *f
             return -1;
         }
 
-        if (expand_tilde(action->target, target, sizeof(target)) != 0) {
+        char expanded_target[PATH_MAX];
+        if (expand_tilde(action->target, expanded_target, sizeof(expanded_target)) != 0) {
             return -1;
         }
 
@@ -147,26 +174,25 @@ int execute_action(const action_t *action, const char *watch_path, const char *f
 
         const char *base = basename_of(filename);
         char destination[PATH_MAX];
-        written = snprintf(destination, sizeof(destination), "%s/%s", target, base);
+        written = snprintf(destination, sizeof(destination), "%s/%s", expanded_target, base);
         if (written < 0 || (size_t)written >= sizeof(destination)) {
             log_error("destination path is too long");
             return -1;
         }
-        strcpy(target, destination);
 
         if (dry_run) {
-            log_info("dry-run: would move '%s' -> '%s'", source, target);
+            log_info("dry-run: would move '%s' -> '%s'", source, destination);
             return 0;
         }
 
-        if (ensure_directory(action->target) != 0) {
-            log_error("destination directory could not be created: %s", action->target);
+        if (ensure_directory(expanded_target) != 0) {
+            log_error("destination directory could not be created: %s", expanded_target);
             return -1;
         }
 
         for (int attempt = 0; attempt < 3; attempt++) {
-            if (rename(source, target) == 0) {
-                log_info("moved '%s' -> '%s'", source, target);
+            if (rename(source, destination) == 0) {
+                log_info("moved '%s' -> '%s'", source, destination);
                 return 0;
             }
 
@@ -178,18 +204,18 @@ int execute_action(const action_t *action, const char *watch_path, const char *f
             nanosleep(&delay, NULL);
         }
 
-        if (access(target, F_OK) == 0) {
-            if (backup_existing_file(target) != 0) {
-                log_error("cannot back up existing target '%s': %s", target, strerror(errno));
+        if (access(destination, F_OK) == 0) {
+            if (backup_existing_file(destination) != 0) {
+                log_error("cannot back up existing target '%s': %s", destination, strerror(errno));
                 return -1;
             }
-            if (rename(source, target) == 0) {
-                log_info("moved '%s' -> '%s'", source, target);
+            if (rename(source, destination) == 0) {
+                log_info("moved '%s' -> '%s'", source, destination);
                 return 0;
             }
         }
 
-        log_error("cannot move '%s' to '%s': %s", source, target, strerror(errno));
+        log_error("cannot move '%s' to '%s': %s", source, destination, strerror(errno));
         return -1;
     }
     default:
