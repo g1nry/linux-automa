@@ -134,6 +134,8 @@ typedef struct {
     const config_t *config;
     int dry_run;
     const char *state_file_path;
+    file_event_t pending_events[256];
+    size_t pending_count;
 } runtime_context_t;
 
 static int write_pidfile(const char *pidfile_path, pid_t pid) {
@@ -303,13 +305,8 @@ static int print_event_callback(const file_event_t *event, void *user_data) {
     return 0;
 }
 
-static int handle_file_event(const file_event_t *event, void *user_data) {
-    if (event == NULL || user_data == NULL) {
-        return -1;
-    }
-
-    runtime_context_t *context = user_data;
-    if (context->config == NULL) {
+static int dispatch_event(runtime_context_t *context, const file_event_t *event) {
+    if (context == NULL || context->config == NULL || event == NULL) {
         return -1;
     }
 
@@ -341,6 +338,50 @@ static int handle_file_event(const file_event_t *event, void *user_data) {
     }
 
     return 0;
+}
+
+static int queue_event(runtime_context_t *context, const file_event_t *event) {
+    if (context == NULL || event == NULL) {
+        return -1;
+    }
+
+    if (context->pending_count >= sizeof(context->pending_events) / sizeof(context->pending_events[0])) {
+        log_warn("event queue is full; dropping event for %s", event->filename);
+        return -1;
+    }
+
+    context->pending_events[context->pending_count++] = *event;
+    return 0;
+}
+
+static int flush_pending_events(runtime_context_t *context) {
+    if (context == NULL) {
+        return -1;
+    }
+
+    while (context->pending_count > 0) {
+        file_event_t event = context->pending_events[0];
+        for (size_t i = 1; i < context->pending_count; i++) {
+            context->pending_events[i - 1] = context->pending_events[i];
+        }
+        context->pending_count--;
+        dispatch_event(context, &event);
+    }
+
+    return 0;
+}
+
+static int handle_file_event(const file_event_t *event, void *user_data) {
+    if (event == NULL || user_data == NULL) {
+        return -1;
+    }
+
+    runtime_context_t *context = user_data;
+    if (context->config == NULL) {
+        return -1;
+    }
+
+    return queue_event(context, event);
 }
 
 static int load_watch_config(const char *config_path, const char *watch_path, config_t *config, const char **out_watch_path) {
@@ -554,6 +595,10 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
                 remove_pidfile(pidfile_path);
             }
             return EXIT_RUNTIME;
+        }
+
+        if (config.rule_count > 0) {
+            flush_pending_events(&context);
         }
     }
 

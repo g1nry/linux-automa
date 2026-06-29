@@ -2,9 +2,12 @@
 #include <fileward/log.h>
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 static int expand_tilde(const char *path, char *out, size_t out_size) {
@@ -56,6 +59,43 @@ static const char *event_type_name(event_type_t event) {
 static const char *basename_of(const char *path) {
     const char *base = strrchr(path, '/');
     return base ? base + 1 : path;
+}
+
+static int ensure_directory(const char *path) {
+    if (path == NULL || path[0] == '\0') {
+        return -1;
+    }
+
+    if (mkdir(path, 0755) == 0) {
+        return 0;
+    }
+
+    if (errno == EEXIST) {
+        struct stat st;
+        if (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
+static int backup_existing_file(const char *target_path) {
+    char backup_path[PATH_MAX];
+    int written = snprintf(backup_path, sizeof(backup_path), "%s.bak", target_path);
+    if (written < 0 || (size_t)written >= sizeof(backup_path)) {
+        return -1;
+    }
+
+    if (rename(target_path, backup_path) == 0) {
+        return 0;
+    }
+
+    if (errno == ENOENT) {
+        return 0;
+    }
+
+    return -1;
 }
 
 int execute_action(const action_t *action, const char *watch_path, const char *filename, event_type_t event, int dry_run) {
@@ -112,13 +152,37 @@ int execute_action(const action_t *action, const char *watch_path, const char *f
             return 0;
         }
 
-        if (rename(source, target) != 0) {
-            log_error("cannot move '%s' to '%s': %s", source, target, strerror(errno));
+        if (ensure_directory(action->target) != 0) {
+            log_error("destination directory could not be created: %s", action->target);
             return -1;
         }
 
-        log_info("moved '%s' -> '%s'", source, target);
-        return 0;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            if (rename(source, target) == 0) {
+                log_info("moved '%s' -> '%s'", source, target);
+                return 0;
+            }
+
+            if (errno != EXDEV && errno != EBUSY && errno != EAGAIN) {
+                break;
+            }
+
+            usleep(100000);
+        }
+
+        if (access(target, F_OK) == 0) {
+            if (backup_existing_file(target) != 0) {
+                log_error("cannot back up existing target '%s': %s", target, strerror(errno));
+                return -1;
+            }
+            if (rename(source, target) == 0) {
+                log_info("moved '%s' -> '%s'", source, target);
+                return 0;
+            }
+        }
+
+        log_error("cannot move '%s' to '%s': %s", source, target, strerror(errno));
+        return -1;
     }
     default:
         log_warn("unknown action type");
