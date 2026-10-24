@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -31,6 +32,8 @@
 
 static volatile sig_atomic_t running = 1;
 static volatile sig_atomic_t reload_requested = 0;
+static int pidfile_fd = -1;
+static int startup_fd = -1;
 
 static void handle_signal(int signal_number) {
     if (signal_number == SIGHUP) {
@@ -84,17 +87,17 @@ static int is_help_arg(const char *arg) {
 
 static void print_usage(const char *program_name) {
     fprintf(stderr, "Usage: %s <subcommand> [options]\n", program_name);
-    fprintf(stderr, "       %s run [--config <file>] [--dry-run] [--daemon] [--pidfile <file>] [--log-file <file>] [--state-file <file>] <directory_to_watch>\n", program_name);
-    fprintf(stderr, "       %s start [--config <file>] [--dry-run] [--pidfile <file>] [--log-file <file>] [--state-file <file>] <directory_to_watch>\n", program_name);
+    fprintf(stderr, "       %s run [--config <file>] [--dry-run] [--daemon] [--pidfile <file>] [--log-file <file>] [--state-file <file>] [<directory_to_watch>]\n", program_name);
+    fprintf(stderr, "       %s start [--config <file>] [--dry-run] [--pidfile <file>] [--log-file <file>] [--state-file <file>] [<directory_to_watch>]\n", program_name);
     fprintf(stderr, "       %s stop [--pidfile <file>]\n", program_name);
     fprintf(stderr, "       %s status [--pidfile <file>]\n", program_name);
     fprintf(stderr, "       %s reload [--pidfile <file>]\n", program_name);
     fprintf(stderr, "       %s test [--config <file>] <path>\n", program_name);
-    fprintf(stderr, "       %s explain [--config <file>] [--event <event>] <path>\n", program_name);
+    fprintf(stderr, "       %s explain --config <file> [--event <event>] <path>\n", program_name);
 }
 
 static void print_run_usage(const char *program_name) {
-    fprintf(stderr, "Usage: %s run [--config <file>] [--dry-run] [--daemon] [--pidfile <file>] [--log-file <file>] [--state-file <file>] <directory_to_watch>\n", program_name);
+    fprintf(stderr, "Usage: %s run [--config <file>] [--dry-run] [--daemon] [--pidfile <file>] [--log-file <file>] [--state-file <file>] [<directory_to_watch>]\n", program_name);
 }
 
 static void print_test_usage(const char *program_name) {
@@ -123,6 +126,7 @@ static void print_help(const char *program_name) {
     fprintf(stderr, "  --log-file <file>  redirect logs to a file\n");
     fprintf(stderr, "  --state-file <file> append handled events to a journal file\n");
     fprintf(stderr, "  --event <event>    event type for explain: created, modified, deleted, moved_from, moved_to\n");
+    fprintf(stderr, "  The watch directory is required unless --config supplies it.\n");
     fprintf(stderr, "\nExamples:\n");
     fprintf(stderr, "  %s run --config fileward.conf\n", program_name);
     fprintf(stderr, "  %s start --daemon --config fileward.conf ~/Downloads\n", program_name);
@@ -138,54 +142,103 @@ typedef struct {
     size_t pending_count;
 } runtime_context_t;
 
-static int write_pidfile(const char *pidfile_path, pid_t pid) {
-    if (pidfile_path == NULL || pidfile_path[0] == '\0') {
-        return 0;
-    }
-
-    FILE *fp = fopen(pidfile_path, "w");
-    if (fp == NULL) {
+static int lock_pidfile(const char *pidfile_path) {
+    int fd = open(pidfile_path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0) {
         fprintf(stderr, "failed to open pidfile '%s': %s\n", pidfile_path, strerror(errno));
         return -1;
     }
 
-    fprintf(fp, "%ld\n", (long)pid);
-    fclose(fp);
+    if (fd <= STDERR_FILENO) {
+        int duplicate = fcntl(fd, F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
+        close(fd);
+        if (duplicate < 0) {
+            fprintf(stderr, "failed to reserve pidfile descriptor: %s\n", strerror(errno));
+            return -1;
+        }
+        fd = duplicate;
+    }
+
+    struct stat pidfile_stat;
+    if (fstat(fd, &pidfile_stat) != 0 || !S_ISREG(pidfile_stat.st_mode)) {
+        fprintf(stderr, "pidfile is not a regular file: %s\n", pidfile_path);
+        close(fd);
+        return -1;
+    }
+
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        fprintf(stderr, "fileward is already running or pidfile is locked: %s\n", pidfile_path);
+        close(fd);
+        return -1;
+    }
+
+    pidfile_fd = fd;
     return 0;
 }
 
-static int remove_pidfile(const char *pidfile_path) {
-    if (pidfile_path == NULL || pidfile_path[0] == '\0') {
+static int write_pidfile(pid_t pid) {
+    if (pidfile_fd < 0) {
         return 0;
     }
 
-    if (unlink(pidfile_path) != 0 && errno != ENOENT) {
-        fprintf(stderr, "failed to remove pidfile '%s': %s\n", pidfile_path, strerror(errno));
+    char contents[32];
+    int len = snprintf(contents, sizeof(contents), "%ld\n", (long)pid);
+    if (len < 0 || (size_t)len >= sizeof(contents) ||
+        ftruncate(pidfile_fd, 0) != 0 || lseek(pidfile_fd, 0, SEEK_SET) < 0) {
+        fprintf(stderr, "failed to write pidfile: %s\n", strerror(errno));
         return -1;
+    }
+
+    size_t written = 0;
+    while (written < (size_t)len) {
+        ssize_t count = write(pidfile_fd, contents + written, (size_t)len - written);
+        if (count <= 0) {
+            fprintf(stderr, "failed to write pidfile: %s\n", strerror(errno));
+            return -1;
+        }
+        written += (size_t)count;
     }
 
     return 0;
 }
 
-static int read_pidfile(const char *pidfile_path, pid_t *pid_out) {
-    if (pidfile_path == NULL || pidfile_path[0] == '\0') {
+static void release_pidfile(void) {
+    if (pidfile_fd >= 0) {
+        close(pidfile_fd);
+        pidfile_fd = -1;
+    }
+}
+
+static int is_pid_running(pid_t pid);
+
+static int read_running_pid(const char *pidfile_path, pid_t *pid_out) {
+    int fd = open(pidfile_path, O_RDONLY);
+    if (fd < 0) {
         return -1;
     }
 
-    FILE *fp = fopen(pidfile_path, "r");
+    if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
+        close(fd);
+        return -1;
+    }
+    if (errno != EWOULDBLOCK) {
+        close(fd);
+        return -1;
+    }
+
+    FILE *fp = fdopen(fd, "r");
     if (fp == NULL) {
+        close(fd);
         return -1;
     }
-
     long pid_value = 0;
-    if (fscanf(fp, "%ld", &pid_value) != 1) {
-        fclose(fp);
+    int parsed = fscanf(fp, "%ld", &pid_value);
+    fclose(fp);
+    if (parsed != 1 || pid_value <= 0) {
         return -1;
     }
-
-    fclose(fp);
     *pid_out = (pid_t)pid_value;
-    return 0;
+    return is_pid_running(*pid_out) ? 0 : -1;
 }
 
 static int is_pid_running(pid_t pid) {
@@ -219,16 +272,34 @@ static int redirect_output(const char *log_file_path) {
     return 0;
 }
 
-static int daemonize_process(const char *pidfile_path, const char *log_file_path) {
+static int daemonize_process(const char *log_file_path) {
+    int startup_pipe[2];
+    if (pipe(startup_pipe) != 0) {
+        fprintf(stderr, "startup pipe failed: %s\n", strerror(errno));
+        return -1;
+    }
+
     pid_t pid = fork();
     if (pid < 0) {
         fprintf(stderr, "fork failed: %s\n", strerror(errno));
+        close(startup_pipe[0]);
+        close(startup_pipe[1]);
         return -1;
     }
 
     if (pid > 0) {
-        exit(EXIT_OK);
+        close(startup_pipe[1]);
+        char result = 0;
+        ssize_t received;
+        do {
+            received = read(startup_pipe[0], &result, 1);
+        } while (received < 0 && errno == EINTR);
+        close(startup_pipe[0]);
+        _exit(received == 1 && result == '1' ? EXIT_OK : EXIT_RUNTIME);
     }
+
+    close(startup_pipe[0]);
+    startup_fd = startup_pipe[1];
 
     if (setsid() < 0) {
         fprintf(stderr, "setsid failed: %s\n", strerror(errno));
@@ -244,13 +315,10 @@ static int daemonize_process(const char *pidfile_path, const char *log_file_path
     }
 
     if (pid > 0) {
-        exit(EXIT_OK);
+        _exit(EXIT_OK);
     }
 
-    if (chdir("/") != 0) {
-        fprintf(stderr, "chdir failed: %s\n", strerror(errno));
-        return -1;
-    }
+    /* Preserve the launch directory for relative config, log and action paths. */
 
     close(STDIN_FILENO);
     if (redirect_output(log_file_path) != 0) {
@@ -259,11 +327,20 @@ static int daemonize_process(const char *pidfile_path, const char *log_file_path
     }
 
     umask(0);
-    if (write_pidfile(pidfile_path, getpid()) != 0) {
+    if (write_pidfile(getpid()) != 0) {
         return -1;
     }
 
     return 0;
+}
+
+static void notify_startup(int success) {
+    if (startup_fd >= 0) {
+        char result = success ? '1' : '0';
+        (void)write(startup_fd, &result, 1);
+        close(startup_fd);
+        startup_fd = -1;
+    }
 }
 
 static int append_state_event(const char *state_file_path, const char *watch_root, const char *filename, event_type_t event, const char *action_name) {
@@ -315,6 +392,11 @@ static int dispatch_event(runtime_context_t *context, const file_event_t *event)
         return 0;
     }
 
+    if (context->config->rule_count == 0) {
+        print_event_callback(event, NULL);
+        return 0;
+    }
+
     int matched = 0;
     for (int i = 0; i < context->config->rule_count; i++) {
         const rule_t *rule = &context->config->rules[i];
@@ -326,8 +408,11 @@ static int dispatch_event(runtime_context_t *context, const file_event_t *event)
         }
 
         matched++;
-        execute_action(&rule->action, context->config->watch_path, event->filename, event->type, context->dry_run);
-        if (context->state_file_path != NULL && context->state_file_path[0] != '\0') {
+        if (execute_action(&rule->action, context->config->watch_path, event->filename, event->type, context->dry_run) != 0) {
+            log_error("action failed for %s", event->filename);
+            continue;
+        }
+        if (!context->dry_run && context->state_file_path != NULL && context->state_file_path[0] != '\0') {
             const char *action_name = rule->action.type == ACTION_LOG ? "log" : "move";
             append_state_event(context->state_file_path, context->config->watch_path, event->filename, event->type, action_name);
         }
@@ -340,14 +425,15 @@ static int dispatch_event(runtime_context_t *context, const file_event_t *event)
     return 0;
 }
 
+static int flush_pending_events(runtime_context_t *context);
+
 static int queue_event(runtime_context_t *context, const file_event_t *event) {
     if (context == NULL || event == NULL) {
         return -1;
     }
 
     if (context->pending_count >= sizeof(context->pending_events) / sizeof(context->pending_events[0])) {
-        log_warn("event queue is full; dropping event for %s", event->filename);
-        return -1;
+        flush_pending_events(context);
     }
 
     context->pending_events[context->pending_count++] = *event;
@@ -359,13 +445,10 @@ static int flush_pending_events(runtime_context_t *context) {
         return -1;
     }
 
-    while (context->pending_count > 0) {
-        file_event_t event = context->pending_events[0];
-        for (size_t i = 1; i < context->pending_count; i++) {
-            context->pending_events[i - 1] = context->pending_events[i];
-        }
-        context->pending_count--;
-        dispatch_event(context, &event);
+    size_t count = context->pending_count;
+    context->pending_count = 0;
+    for (size_t i = 0; i < count; i++) {
+        dispatch_event(context, &context->pending_events[i]);
     }
 
     return 0;
@@ -456,7 +539,8 @@ static int path_within_root(const char *root, const char *target, char *relative
     }
 
     size_t root_len = strlen(resolved_root);
-    if (strncmp(resolved_root, resolved_target, root_len) != 0) {
+    if (strncmp(resolved_root, resolved_target, root_len) != 0 ||
+        (root_len > 1 && resolved_target[root_len] != '/' && resolved_target[root_len] != '\0')) {
         return 0;
     }
 
@@ -565,22 +649,21 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
         return EXIT_RUNTIME;
     }
 
+    if (daemon_mode && pidfile_path == NULL) {
+        pidfile_path = "/tmp/fileward.pid";
+    }
+    if (pidfile_path != NULL && lock_pidfile(pidfile_path) != 0) {
+        return EXIT_RUNTIME;
+    }
+
     if (daemon_mode) {
-        if (pidfile_path == NULL) {
-            pidfile_path = "/tmp/fileward.pid";
-        }
-
-        pid_t existing_pid = 0;
-        if (read_pidfile(pidfile_path, &existing_pid) == 0 && is_pid_running(existing_pid)) {
-            fprintf(stderr, "fileward is already running (pid %ld)\n", (long)existing_pid);
-            return EXIT_RUNTIME;
-        }
-
-        if (daemonize_process(pidfile_path, log_file_path) != 0) {
+        if (daemonize_process(log_file_path) != 0) {
+            release_pidfile();
             return EXIT_RUNTIME;
         }
     } else if (pidfile_path != NULL) {
-        if (write_pidfile(pidfile_path, getpid()) != 0) {
+        if (write_pidfile(getpid()) != 0) {
+            release_pidfile();
             return EXIT_RUNTIME;
         }
     }
@@ -590,11 +673,12 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
     signal(SIGHUP, handle_signal);
 
     if (start_watcher(watch_root) != 0) {
-        if (daemon_mode) {
-            remove_pidfile(pidfile_path);
-        }
+        notify_startup(0);
+        release_pidfile();
         return EXIT_RUNTIME;
     }
+
+    notify_startup(1);
 
     log_info("fileward started. Press Ctrl+C to stop.%s", dry_run ? " (dry-run mode)" : "");
 
@@ -606,7 +690,8 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
         if (reload_requested && config_path != NULL) {
             reload_requested = 0;
             config_t new_config;
-            if (load_config(config_path, &new_config) != 0) {
+            const char *new_watch_root = NULL;
+            if (load_watch_config(config_path, watch_path, &new_config, &new_watch_root) != 0) {
                 log_error("failed to reload config: %s; keeping previous rules", config_path);
                 continue;
             }
@@ -618,24 +703,17 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
             log_info("reloaded config: %s", config_path);
         }
 
-        int (*event_callback)(const file_event_t *, void *) = config.rule_count > 0 ? handle_file_event : print_event_callback;
-        if (watcher_process_events(500, event_callback, &context) != 0) {
+        if (watcher_process_events(500, handle_file_event, &context) != 0) {
             stop_watcher();
-            if (daemon_mode) {
-                remove_pidfile(pidfile_path);
-            }
+            release_pidfile();
             return EXIT_RUNTIME;
         }
 
-        if (config.rule_count > 0) {
-            flush_pending_events(&context);
-        }
+        flush_pending_events(&context);
     }
 
     stop_watcher();
-    if (daemon_mode) {
-        remove_pidfile(pidfile_path);
-    }
+    release_pidfile();
     log_info("fileward stopped.");
     return EXIT_OK;
 }
@@ -656,7 +734,7 @@ static int stop_command(int argc, char *argv[]) {
     }
 
     pid_t pid = 0;
-    if (read_pidfile(pidfile_path, &pid) != 0 || !is_pid_running(pid)) {
+    if (read_running_pid(pidfile_path, &pid) != 0) {
         fprintf(stderr, "fileward is not running\n");
         return EXIT_RUNTIME;
     }
@@ -666,9 +744,17 @@ static int stop_command(int argc, char *argv[]) {
         return EXIT_RUNTIME;
     }
 
-    remove_pidfile(pidfile_path);
-    printf("stopped fileward (pid %ld)\n", (long)pid);
-    return EXIT_OK;
+    for (int attempt = 0; attempt < 50; attempt++) {
+        if (read_running_pid(pidfile_path, &pid) != 0) {
+            printf("stopped fileward\n");
+            return EXIT_OK;
+        }
+        struct timespec delay = {0, 100000000L};
+        nanosleep(&delay, NULL);
+    }
+
+    fprintf(stderr, "timed out waiting for fileward to stop\n");
+    return EXIT_RUNTIME;
 }
 
 static int status_command(int argc, char *argv[]) {
@@ -687,7 +773,7 @@ static int status_command(int argc, char *argv[]) {
     }
 
     pid_t pid = 0;
-    if (read_pidfile(pidfile_path, &pid) != 0 || !is_pid_running(pid)) {
+    if (read_running_pid(pidfile_path, &pid) != 0) {
         printf("fileward: stopped\n");
         return EXIT_OK;
     }
@@ -712,7 +798,7 @@ static int reload_command(int argc, char *argv[]) {
     }
 
     pid_t pid = 0;
-    if (read_pidfile(pidfile_path, &pid) != 0 || !is_pid_running(pid)) {
+    if (read_running_pid(pidfile_path, &pid) != 0) {
         fprintf(stderr, "fileward is not running\n");
         return EXIT_RUNTIME;
     }

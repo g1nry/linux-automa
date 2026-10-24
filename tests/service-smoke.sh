@@ -31,16 +31,16 @@ wait_for_log() {
 }
 
 mkdir "$workdir/watch"
-printf 'watch %s/watch\nwhen created *.txt log "text rule"\n' "$workdir" > "$workdir/fileward.conf"
+printf 'watch %s/configured-watch\nwhen created *.txt log "text rule"\n' "$workdir" > "$workdir/fileward.conf"
 : > "$workdir/fileward.log"
-"$binary" run --config "$workdir/fileward.conf" --log-file "$workdir/fileward.log" > "$workdir/launcher.log" 2>&1 &
+"$binary" run --config "$workdir/fileward.conf" --log-file "$workdir/fileward.log" "$workdir/watch" > "$workdir/launcher.log" 2>&1 &
 pid=$!
 wait_for_log 'fileward started'
 
 touch "$workdir/watch/first.txt"
 wait_for_log 'action log: text rule'
 
-printf 'watch %s/watch\nwhen created *.md log "markdown rule"\n' "$workdir" > "$workdir/fileward.conf"
+printf 'watch %s/configured-watch\nwhen created *.md log "markdown rule"\n' "$workdir" > "$workdir/fileward.conf"
 kill -HUP "$pid"
 wait_for_log 'reloaded config:'
 touch "$workdir/watch/second.md"

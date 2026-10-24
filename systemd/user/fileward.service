@@ -1,6 +1,5 @@
 [Unit]
 Description=Fileward local automation daemon
-After=default.target
 
 [Service]
 Type=simple
