@@ -394,6 +394,11 @@ static int dispatch_event(runtime_context_t *context, const file_event_t *event)
         return 0;
     }
 
+    if (context->config->rule_count == 0) {
+        print_event_callback(event, NULL);
+        return 0;
+    }
+
     int matched = 0;
     for (int i = 0; i < context->config->rule_count; i++) {
         const rule_t *rule = &context->config->rules[i];
@@ -405,8 +410,11 @@ static int dispatch_event(runtime_context_t *context, const file_event_t *event)
         }
 
         matched++;
-        execute_action(&rule->action, context->config->watch_path, event->filename, event->type, context->dry_run);
-        if (context->state_file_path != NULL && context->state_file_path[0] != '\0') {
+        if (execute_action(&rule->action, context->config->watch_path, event->filename, event->type, context->dry_run) != 0) {
+            log_error("action failed for %s", event->filename);
+            continue;
+        }
+        if (!context->dry_run && context->state_file_path != NULL && context->state_file_path[0] != '\0') {
             const char *action_name = rule->action.type == ACTION_LOG ? "log" : "move";
             append_state_event(context->state_file_path, context->config->watch_path, event->filename, event->type, action_name);
         }
@@ -419,14 +427,15 @@ static int dispatch_event(runtime_context_t *context, const file_event_t *event)
     return 0;
 }
 
+static int flush_pending_events(runtime_context_t *context);
+
 static int queue_event(runtime_context_t *context, const file_event_t *event) {
     if (context == NULL || event == NULL) {
         return -1;
     }
 
     if (context->pending_count >= sizeof(context->pending_events) / sizeof(context->pending_events[0])) {
-        log_warn("event queue is full; dropping event for %s", event->filename);
-        return -1;
+        flush_pending_events(context);
     }
 
     context->pending_events[context->pending_count++] = *event;
@@ -438,13 +447,10 @@ static int flush_pending_events(runtime_context_t *context) {
         return -1;
     }
 
-    while (context->pending_count > 0) {
-        file_event_t event = context->pending_events[0];
-        for (size_t i = 1; i < context->pending_count; i++) {
-            context->pending_events[i - 1] = context->pending_events[i];
-        }
-        context->pending_count--;
-        dispatch_event(context, &event);
+    size_t count = context->pending_count;
+    context->pending_count = 0;
+    for (size_t i = 0; i < count; i++) {
+        dispatch_event(context, &context->pending_events[i]);
     }
 
     return 0;
@@ -697,16 +703,13 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
             log_info("reloaded config: %s", config_path);
         }
 
-        int (*event_callback)(const file_event_t *, void *) = config.rule_count > 0 ? handle_file_event : print_event_callback;
-        if (watcher_process_events(500, event_callback, &context) != 0) {
+        if (watcher_process_events(500, handle_file_event, &context) != 0) {
             stop_watcher();
             release_pidfile();
             return EXIT_RUNTIME;
         }
 
-        if (config.rule_count > 0) {
-            flush_pending_events(&context);
-        }
+        flush_pending_events(&context);
     }
 
     stop_watcher();
