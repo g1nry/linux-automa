@@ -87,17 +87,17 @@ static int is_help_arg(const char *arg) {
 
 static void print_usage(const char *program_name) {
     fprintf(stderr, "Usage: %s <subcommand> [options]\n", program_name);
-    fprintf(stderr, "       %s run [--config <file>] [--dry-run] [--daemon] [--pidfile <file>] [--log-file <file>] [--state-file <file>] <directory_to_watch>\n", program_name);
-    fprintf(stderr, "       %s start [--config <file>] [--dry-run] [--pidfile <file>] [--log-file <file>] [--state-file <file>] <directory_to_watch>\n", program_name);
+    fprintf(stderr, "       %s run [--config <file>] [--dry-run] [--daemon] [--pidfile <file>] [--log-file <file>] [--state-file <file>] [<directory_to_watch>]\n", program_name);
+    fprintf(stderr, "       %s start [--config <file>] [--dry-run] [--pidfile <file>] [--log-file <file>] [--state-file <file>] [<directory_to_watch>]\n", program_name);
     fprintf(stderr, "       %s stop [--pidfile <file>]\n", program_name);
     fprintf(stderr, "       %s status [--pidfile <file>]\n", program_name);
     fprintf(stderr, "       %s reload [--pidfile <file>]\n", program_name);
     fprintf(stderr, "       %s test [--config <file>] <path>\n", program_name);
-    fprintf(stderr, "       %s explain [--config <file>] [--event <event>] <path>\n", program_name);
+    fprintf(stderr, "       %s explain --config <file> [--event <event>] <path>\n", program_name);
 }
 
 static void print_run_usage(const char *program_name) {
-    fprintf(stderr, "Usage: %s run [--config <file>] [--dry-run] [--daemon] [--pidfile <file>] [--log-file <file>] [--state-file <file>] <directory_to_watch>\n", program_name);
+    fprintf(stderr, "Usage: %s run [--config <file>] [--dry-run] [--daemon] [--pidfile <file>] [--log-file <file>] [--state-file <file>] [<directory_to_watch>]\n", program_name);
 }
 
 static void print_test_usage(const char *program_name) {
@@ -126,6 +126,7 @@ static void print_help(const char *program_name) {
     fprintf(stderr, "  --log-file <file>  redirect logs to a file\n");
     fprintf(stderr, "  --state-file <file> append handled events to a journal file\n");
     fprintf(stderr, "  --event <event>    event type for explain: created, modified, deleted, moved_from, moved_to\n");
+    fprintf(stderr, "  The watch directory is required unless --config supplies it.\n");
     fprintf(stderr, "\nExamples:\n");
     fprintf(stderr, "  %s run --config fileward.conf\n", program_name);
     fprintf(stderr, "  %s start --daemon --config fileward.conf ~/Downloads\n", program_name);
@@ -317,10 +318,7 @@ static int daemonize_process(const char *log_file_path) {
         _exit(EXIT_OK);
     }
 
-    if (chdir("/") != 0) {
-        fprintf(stderr, "chdir failed: %s\n", strerror(errno));
-        return -1;
-    }
+    /* Preserve the launch directory for relative config, log and action paths. */
 
     close(STDIN_FILENO);
     if (redirect_output(log_file_path) != 0) {
@@ -541,7 +539,8 @@ static int path_within_root(const char *root, const char *target, char *relative
     }
 
     size_t root_len = strlen(resolved_root);
-    if (strncmp(resolved_root, resolved_target, root_len) != 0) {
+    if (strncmp(resolved_root, resolved_target, root_len) != 0 ||
+        (root_len > 1 && resolved_target[root_len] != '/' && resolved_target[root_len] != '\0')) {
         return 0;
     }
 
@@ -691,7 +690,8 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
         if (reload_requested && config_path != NULL) {
             reload_requested = 0;
             config_t new_config;
-            if (load_config(config_path, &new_config) != 0) {
+            const char *new_watch_root = NULL;
+            if (load_watch_config(config_path, watch_path, &new_config, &new_watch_root) != 0) {
                 log_error("failed to reload config: %s; keeping previous rules", config_path);
                 continue;
             }
