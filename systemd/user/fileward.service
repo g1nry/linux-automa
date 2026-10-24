@@ -1,11 +1,10 @@
 [Unit]
 Description=Fileward local automation daemon
 After=default.target
-ConditionPathIsDirectory=%h/Downloads
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/fileward run --config %h/.config/fileward/fileward.conf --state-file %h/.local/share/fileward.state %h/Downloads
+ExecStart=%h/.local/bin/fileward run --config %h/.config/fileward/fileward.conf --state-file %h/.local/share/fileward.state
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=2s
