@@ -37,3 +37,12 @@ jobs:
           printf 'watch %s/watch\nwhen created *.txt log "text file created"\n' "$RUNNER_TEMP" > "$RUNNER_TEMP/fileward.conf"
           ./build/fileward test --config "$RUNNER_TEMP/fileward.conf" "$RUNNER_TEMP/watch/example.txt" | grep -q 'Match 1:'
           ./build/fileward explain --config "$RUNNER_TEMP/fileward.conf" --event created "$RUNNER_TEMP/watch/example.txt" | grep -q 'Match 1:'
+          mkdir -p "$RUNNER_TEMP/watch-other"
+          touch "$RUNNER_TEMP/watch-other/example.txt"
+          for command in test explain; do
+            if output=$(./build/fileward "$command" --config "$RUNNER_TEMP/fileward.conf" "$RUNNER_TEMP/watch-other/example.txt" 2>&1); then
+              echo "Path outside watch root was accepted by $command"
+              exit 1
+            fi
+            grep -q 'outside watch root' <<< "$output"
+          done
