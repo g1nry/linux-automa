@@ -6,6 +6,8 @@ USER_BIN_DIR := $(HOME)/.local/bin
 USER_SYSTEMD_DIR := $(HOME)/.config/systemd/user
 USER_SERVICE := $(USER_SYSTEMD_DIR)/$(PROJECT_NAME).service
 SERVICE_SOURCE := systemd/user/$(PROJECT_NAME).service
+USER_CONFIG_DIR := $(HOME)/.config/$(PROJECT_NAME)
+USER_CONFIG := $(USER_CONFIG_DIR)/$(PROJECT_NAME).conf
 
 .PHONY: help setup build check run clean install-user uninstall-user restart-user status-user logs-user
 
@@ -50,7 +52,10 @@ clean:
 install-user: build
 	mkdir -p $(USER_BIN_DIR)
 	mkdir -p $(USER_SYSTEMD_DIR)
+	mkdir -p $(USER_CONFIG_DIR)
+	mkdir -p $(HOME)/.local/share
 	mkdir -p $(HOME)/Downloads
+	@if [ ! -e "$(USER_CONFIG)" ]; then printf 'watch ~/Downloads\n' > "$(USER_CONFIG)"; fi
 	install -m 755 $(BINARY) $(USER_BIN_DIR)/$(PROJECT_NAME)
 	install -m 644 $(SERVICE_SOURCE) $(USER_SERVICE)
 	systemctl --user daemon-reload
@@ -64,9 +69,7 @@ uninstall-user:
 	systemctl --user daemon-reload
 	-systemctl --user reset-failed $(PROJECT_NAME).service
 
-restart-user: build
-	mkdir -p $(USER_BIN_DIR)
-	install -m 755 $(BINARY) $(USER_BIN_DIR)/$(PROJECT_NAME)
+restart-user: install-user
 	systemctl --user restart $(PROJECT_NAME).service
 
 status-user:
