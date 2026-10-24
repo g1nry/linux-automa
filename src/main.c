@@ -33,6 +33,7 @@
 static volatile sig_atomic_t running = 1;
 static volatile sig_atomic_t reload_requested = 0;
 static int pidfile_fd = -1;
+static int startup_fd = -1;
 
 static void handle_signal(int signal_number) {
     if (signal_number == SIGHUP) {
@@ -271,15 +272,33 @@ static int redirect_output(const char *log_file_path) {
 }
 
 static int daemonize_process(const char *log_file_path) {
+    int startup_pipe[2];
+    if (pipe(startup_pipe) != 0) {
+        fprintf(stderr, "startup pipe failed: %s\n", strerror(errno));
+        return -1;
+    }
+
     pid_t pid = fork();
     if (pid < 0) {
         fprintf(stderr, "fork failed: %s\n", strerror(errno));
+        close(startup_pipe[0]);
+        close(startup_pipe[1]);
         return -1;
     }
 
     if (pid > 0) {
-        exit(EXIT_OK);
+        close(startup_pipe[1]);
+        char result = 0;
+        ssize_t received;
+        do {
+            received = read(startup_pipe[0], &result, 1);
+        } while (received < 0 && errno == EINTR);
+        close(startup_pipe[0]);
+        _exit(received == 1 && result == '1' ? EXIT_OK : EXIT_RUNTIME);
     }
+
+    close(startup_pipe[0]);
+    startup_fd = startup_pipe[1];
 
     if (setsid() < 0) {
         fprintf(stderr, "setsid failed: %s\n", strerror(errno));
@@ -295,7 +314,7 @@ static int daemonize_process(const char *log_file_path) {
     }
 
     if (pid > 0) {
-        exit(EXIT_OK);
+        _exit(EXIT_OK);
     }
 
     if (chdir("/") != 0) {
@@ -315,6 +334,15 @@ static int daemonize_process(const char *log_file_path) {
     }
 
     return 0;
+}
+
+static void notify_startup(int success) {
+    if (startup_fd >= 0) {
+        char result = success ? '1' : '0';
+        (void)write(startup_fd, &result, 1);
+        close(startup_fd);
+        startup_fd = -1;
+    }
 }
 
 static int append_state_event(const char *state_file_path, const char *watch_root, const char *filename, event_type_t event, const char *action_name) {
@@ -640,9 +668,12 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
     signal(SIGHUP, handle_signal);
 
     if (start_watcher(watch_root) != 0) {
+        notify_startup(0);
         release_pidfile();
         return EXIT_RUNTIME;
     }
+
+    notify_startup(1);
 
     log_info("fileward started. Press Ctrl+C to stop.%s", dry_run ? " (dry-run mode)" : "");
 
