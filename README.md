@@ -35,19 +35,21 @@ C-файл изменился в проекте       -> запустить те
 
 ## Текущий статус
 
-Текущий этап — `v0.5`: сервисный запуск, лог-файл и перезагрузка правил без остановки процесса. Часть возможностей `v0.6` уже есть в коде, но пока не считается завершённым релизом.
+Текущий этап — `v0.6`: daemon core с командами управления, блокировкой pidfile, журналом действий и очередью событий.
 
 Текущий фокус:
 
 - рекурсивное наблюдение через `inotify`;
 - правила `log` и `move` из конфигурационного файла;
-- foreground и daemon-запуск, `dry-run` и журнал событий;
+- foreground и daemon-запуск, `dry-run` и журнал обработанных действий;
+- `start`, `stop`, `status`, `reload` и защита от двух процессов с одним pidfile;
+- обработка событий через очередь в основном цикле;
 - user/system `systemd` units и перезагрузка правил через `SIGHUP`.
 
 Ближайшие следующие шаги:
 
-- завершить функции `v0.6` и покрыть поведение сервиса автоматическими проверками;
-- расширить условия правил и действия согласно roadmap ниже.
+- расширить условия правил в `v0.7`;
+- добавить новые действия в `v0.8` согласно roadmap ниже.
 
 ## Сборка
 
@@ -208,12 +210,12 @@ cc -std=c11 -Wall -Wextra -Isrc -Iinclude src/main.c src/watcher.c src/log.c src
 
 ### v0.6 — daemon core
 
-- добавить foreground/background режимы запуска;
-- добавить pidfile/lock для единственного экземпляра;
-- добавить команды `start`, `stop`, `status`, `reload`;
-- вести журнал обработанных событий в state-file;
-- обрабатывать события через простую очередь в основном цикле;
-- сделать запуск более похожим на настоящий local automation daemon.
+- foreground/background режимы запуска;
+- pidfile с блокировкой для единственного экземпляра;
+- команды `start`, `stop`, `status`, `reload`;
+- журнал успешно обработанных действий в state-file;
+- очередь событий с обработкой в основном цикле;
+- подтверждение успешного старта демона и ожидание остановки в `stop`.
 
 ### v0.7 — richer rules
 
@@ -262,7 +264,7 @@ when created *.txt log "text file created"
 Быстрый запуск в фоне:
 
 ```bash
-./build/fileward start --daemon --config example.conf --pidfile /tmp/fileward.pid --state-file /tmp/fileward.state ~/Downloads
+./build/fileward start --config example.conf --pidfile /tmp/fileward.pid --log-file /tmp/fileward.log --state-file /tmp/fileward.state
 ```
 
 Проверка состояния:
@@ -276,6 +278,14 @@ when created *.txt log "text file created"
 ```bash
 ./build/fileward stop --pidfile /tmp/fileward.pid
 ```
+
+Перезагрузка правил:
+
+```bash
+./build/fileward reload --pidfile /tmp/fileward.pid
+```
+
+Pidfile остаётся после остановки: блокировка файла показывает, работает ли процесс. Повторный `start` с тем же pidfile завершится с ошибкой, пока первый экземпляр активен. State-file записывает успешно выполненные действия; `dry-run` не добавляет записи.
 
 В этом этапе конфигурация поддерживает:
 - `watch <path>` — каталог для наблюдения
