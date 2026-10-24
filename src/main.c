@@ -120,7 +120,7 @@ static void print_help(const char *program_name) {
     fprintf(stderr, "  --dry-run          do not execute actions when running\n");
     fprintf(stderr, "  --daemon           detach and run in the background\n");
     fprintf(stderr, "  --pidfile <file>   write/read the daemon pidfile\n");
-    fprintf(stderr, "  --log-file <file>  redirect logs to a file when daemonized\n");
+    fprintf(stderr, "  --log-file <file>  redirect logs to a file\n");
     fprintf(stderr, "  --state-file <file> append handled events to a journal file\n");
     fprintf(stderr, "  --event <event>    event type for explain: created, modified, deleted, moved_from, moved_to\n");
     fprintf(stderr, "\nExamples:\n");
@@ -558,6 +558,11 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
     if (load_watch_config(config_path, watch_path, &config, &watch_root) != 0) {
         fprintf(stderr, "Failed to load watch configuration.\n");
         return EXIT_CONFIG;
+    }
+
+    if (!daemon_mode && log_file_path != NULL && redirect_output(log_file_path) != 0) {
+        fprintf(stderr, "failed to open log file '%s': %s\n", log_file_path, strerror(errno));
+        return EXIT_RUNTIME;
     }
 
     if (daemon_mode) {
