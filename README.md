@@ -206,12 +206,6 @@ cc -std=c11 -Wall -Wextra -Isrc -Iinclude src/main.c src/watcher.c src/log.c src
 
 ## Roadmap
 
-### v0.5 — сервисный режим
-
-- user/system `systemd` unit-файлы;
-- лог-файл для обычного и фонового запуска;
-- перезагрузка конфига через `SIGHUP` с сохранением старых правил при ошибке.
-
 ### v0.6 — daemon core
 
 - добавить foreground/background режимы запуска;
