@@ -25,6 +25,9 @@ jobs:
       - name: Check service reload
         run: bash tests/service-smoke.sh
 
+      - name: Check daemon lifecycle
+        run: bash tests/daemon-smoke.sh
+
       - name: Check config rule matching
         shell: bash
         run: |
