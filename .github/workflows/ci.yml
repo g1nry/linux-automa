@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-smoke-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y meson ninja-build build-essential
+
+      - name: Build and check CLI
+        run: make check
+
+      - name: Check config rule matching
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/watch"
+          touch "$RUNNER_TEMP/watch/example.txt"
+          printf 'watch %s/watch\nwhen created *.txt log "text file created"\n' "$RUNNER_TEMP" > "$RUNNER_TEMP/fileward.conf"
+          ./build/fileward test --config "$RUNNER_TEMP/fileward.conf" "$RUNNER_TEMP/watch/example.txt" | grep -q 'Match 1:'
+          ./build/fileward explain --config "$RUNNER_TEMP/fileward.conf" --event created "$RUNNER_TEMP/watch/example.txt" | grep -q 'Match 1:'
