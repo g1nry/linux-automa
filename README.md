@@ -35,22 +35,19 @@ C-файл изменился в проекте       -> запустить те
 
 ## Текущий статус
 
-Проект находится на раннем этапе разработки и пока движется к `v0.6`.
+Текущий этап — `v0.5`: сервисный запуск, лог-файл и перезагрузка правил без остановки процесса. Часть возможностей `v0.6` уже есть в коде, но пока не считается завершённым релизом.
 
 Текущий фокус:
 
-- запуск из терминала;
-- рекурсивное наблюдение за директорией через `inotify`;
-- вывод событий создания, изменения, удаления и перемещения файлов;
-- корректная остановка по `Ctrl+C`.
+- рекурсивное наблюдение через `inotify`;
+- правила `log` и `move` из конфигурационного файла;
+- foreground и daemon-запуск, `dry-run` и журнал событий;
+- user/system `systemd` units и перезагрузка правил через `SIGHUP`.
 
 Ближайшие следующие шаги:
 
-- поддержка конфигурационного файла;
-- простые правила;
-- действия `log` и `move`;
-- режим `dry-run`;
-- user/system `systemd` service-файлы.
+- завершить функции `v0.6` и покрыть поведение сервиса автоматическими проверками;
+- расширить условия правил и действия согласно roadmap ниже.
 
 ## Сборка
 
@@ -116,6 +113,13 @@ kill -HUP <pid>
 ```
 
 Если `fileward` запущен с `--config fileward.conf`, он перечитает конфиг и применит новые правила без перезапуска.
+При ошибке в новом конфиге старые правила продолжают работать. Если поменялся каталог `watch`, нужен перезапуск сервиса.
+
+Запись логов в файл при обычном или фоновом запуске:
+
+```bash
+./build/fileward run --config fileward.conf --log-file ~/fileward.log
+```
 
 ## Makefile workflow
 
@@ -165,7 +169,26 @@ make logs-user
 make uninstall-user
 ```
 
-`install-user` ставит бинарь в `~/.local/bin/fileward`, service-файл в `~/.config/systemd/user/fileward.service` и запускает сервис через `systemctl --user`.
+`install-user` ставит бинарь в `~/.local/bin/fileward`, service-файл в `~/.config/systemd/user/fileward.service`, создаёт `~/.config/fileward/fileward.conf` с `watch ~/Downloads` (если файла ещё нет) и запускает сервис через `systemctl --user`. Логи сервиса доступны через `make logs-user`.
+
+После изменения правил:
+
+```bash
+systemctl --user reload fileward.service
+```
+
+Для system-service под конкретным пользователем есть шаблон `systemd/system/fileward@.service`. Пример установки для текущего пользователя:
+
+```bash
+sudo meson install -C build
+sudo install -m 644 systemd/system/fileward@.service /etc/systemd/system/
+sudo install -d -m 755 /etc/fileward
+printf 'watch %s/Downloads\n' "$HOME" | sudo tee "/etc/fileward/$USER.conf" >/dev/null
+sudo systemctl daemon-reload
+sudo systemctl enable --now "fileward@$USER.service"
+```
+
+System-service запускает процесс от имени выбранного пользователя и читает `/etc/fileward/<user>.conf`. Перед его запуском остановите user-service для того же каталога: `systemctl --user disable --now fileward.service`.
 
 ## Быстрая проверка без Meson
 
@@ -182,12 +205,6 @@ cc -std=c11 -Wall -Wextra -Isrc -Iinclude src/main.c src/watcher.c src/log.c src
 ```
 
 ## Roadmap
-
-### v0.5 — сервисный режим
-
-- добавить `systemd` unit-файлы;
-- добавить поддержку лог-файла;
-- добавить перезагрузку конфига через `SIGHUP`.
 
 ### v0.6 — daemon core
 

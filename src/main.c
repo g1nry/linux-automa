@@ -120,7 +120,7 @@ static void print_help(const char *program_name) {
     fprintf(stderr, "  --dry-run          do not execute actions when running\n");
     fprintf(stderr, "  --daemon           detach and run in the background\n");
     fprintf(stderr, "  --pidfile <file>   write/read the daemon pidfile\n");
-    fprintf(stderr, "  --log-file <file>  redirect logs to a file when daemonized\n");
+    fprintf(stderr, "  --log-file <file>  redirect logs to a file\n");
     fprintf(stderr, "  --state-file <file> append handled events to a journal file\n");
     fprintf(stderr, "  --event <event>    event type for explain: created, modified, deleted, moved_from, moved_to\n");
     fprintf(stderr, "\nExamples:\n");
@@ -560,6 +560,11 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
         return EXIT_CONFIG;
     }
 
+    if (!daemon_mode && log_file_path != NULL && redirect_output(log_file_path) != 0) {
+        fprintf(stderr, "failed to open log file '%s': %s\n", log_file_path, strerror(errno));
+        return EXIT_RUNTIME;
+    }
+
     if (daemon_mode) {
         if (pidfile_path == NULL) {
             pidfile_path = "/tmp/fileward.pid";
@@ -602,20 +607,12 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
             reload_requested = 0;
             config_t new_config;
             if (load_config(config_path, &new_config) != 0) {
-                log_error("failed to reload config: %s", config_path);
-                stop_watcher();
-                if (daemon_mode) {
-                    remove_pidfile(pidfile_path);
-                }
-                return EXIT_CONFIG;
+                log_error("failed to reload config: %s; keeping previous rules", config_path);
+                continue;
             }
             if (strcmp(new_config.watch_path, config.watch_path) != 0) {
-                log_error("config reload changed watch path, restart required");
-                stop_watcher();
-                if (daemon_mode) {
-                    remove_pidfile(pidfile_path);
-                }
-                return EXIT_RUNTIME;
+                log_error("config reload changed watch path; keeping previous rules until restart");
+                continue;
             }
             config = new_config;
             log_info("reloaded config: %s", config_path);

@@ -1,0 +1,14 @@
+[Unit]
+Description=Fileward automation for %i
+ConditionPathExists=/etc/fileward/%i.conf
+
+[Service]
+Type=simple
+User=%i
+ExecStart=/usr/local/bin/fileward run --config /etc/fileward/%i.conf
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target
