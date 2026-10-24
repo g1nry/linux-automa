@@ -602,20 +602,12 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
             reload_requested = 0;
             config_t new_config;
             if (load_config(config_path, &new_config) != 0) {
-                log_error("failed to reload config: %s", config_path);
-                stop_watcher();
-                if (daemon_mode) {
-                    remove_pidfile(pidfile_path);
-                }
-                return EXIT_CONFIG;
+                log_error("failed to reload config: %s; keeping previous rules", config_path);
+                continue;
             }
             if (strcmp(new_config.watch_path, config.watch_path) != 0) {
-                log_error("config reload changed watch path, restart required");
-                stop_watcher();
-                if (daemon_mode) {
-                    remove_pidfile(pidfile_path);
-                }
-                return EXIT_RUNTIME;
+                log_error("config reload changed watch path; keeping previous rules until restart");
+                continue;
             }
             config = new_config;
             log_info("reloaded config: %s", config_path);
