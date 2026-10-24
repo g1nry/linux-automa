@@ -32,7 +32,8 @@ wait_for_log() {
 
 mkdir "$workdir/watch"
 printf 'watch %s/watch\nwhen created *.txt log "text rule"\n' "$workdir" > "$workdir/fileward.conf"
-"$binary" run --config "$workdir/fileward.conf" > "$workdir/fileward.log" 2>&1 &
+: > "$workdir/fileward.log"
+"$binary" run --config "$workdir/fileward.conf" --log-file "$workdir/fileward.log" > "$workdir/launcher.log" 2>&1 &
 pid=$!
 wait_for_log 'fileward started'
 
