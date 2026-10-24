@@ -744,8 +744,17 @@ static int stop_command(int argc, char *argv[]) {
         return EXIT_RUNTIME;
     }
 
-    printf("stop requested for fileward (pid %ld)\n", (long)pid);
-    return EXIT_OK;
+    for (int attempt = 0; attempt < 50; attempt++) {
+        if (read_running_pid(pidfile_path, &pid) != 0) {
+            printf("stopped fileward\n");
+            return EXIT_OK;
+        }
+        struct timespec delay = {0, 100000000L};
+        nanosleep(&delay, NULL);
+    }
+
+    fprintf(stderr, "timed out waiting for fileward to stop\n");
+    return EXIT_RUNTIME;
 }
 
 static int status_command(int argc, char *argv[]) {
