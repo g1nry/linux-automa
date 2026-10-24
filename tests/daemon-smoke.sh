@@ -11,7 +11,9 @@ config="$workdir/fileward.conf"
 cleanup() {
   if "$binary" status --pidfile "$pidfile" | grep -q 'running'; then
     "$binary" stop --pidfile "$pidfile" || true
-    sleep 0.5
+    if "$binary" status --pidfile "$pidfile" | grep -q 'running'; then
+      kill -KILL "$(cat "$pidfile")" 2>/dev/null || true
+    fi
   fi
   rm -rf -- "$workdir"
 }
@@ -44,23 +46,11 @@ wait_for_log 'action log: daemon rule'
 grep -Fq $'first.txt\tlog' "$statefile"
 
 "$binary" stop --pidfile "$pidfile"
-for _ in {1..50}; do
-  if "$binary" status --pidfile "$pidfile" | grep -q 'stopped'; then
-    break
-  fi
-  sleep 0.1
-done
 "$binary" status --pidfile "$pidfile" | grep -q 'stopped'
 
 "$binary" start --config "$config" --pidfile "$pidfile" --log-file "$logfile"
 "$binary" status --pidfile "$pidfile" | grep -q 'running'
 "$binary" stop --pidfile "$pidfile"
-for _ in {1..50}; do
-  if "$binary" status --pidfile "$pidfile" | grep -q 'stopped'; then
-    break
-  fi
-  sleep 0.1
-done
 "$binary" status --pidfile "$pidfile" | grep -q 'stopped'
 
 printf 'watch %s/missing\n' "$workdir" > "$config"
