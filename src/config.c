@@ -1,4 +1,5 @@
 #include <fileward/config.h>
+#include <fileward/action.h>
 #include <fileward/log.h>
 
 #include <ctype.h>
@@ -101,6 +102,9 @@ static action_type_t parse_action_type(const char *token) {
     if (strcmp(token, "move") == 0) {
         return ACTION_MOVE;
     }
+    if (strcmp(token, "copy") == 0) return ACTION_COPY;
+    if (strcmp(token, "archive") == 0) return ACTION_ARCHIVE;
+    if (strcmp(token, "exec") == 0) return ACTION_EXEC;
     return ACTION_UNKNOWN;
 }
 
@@ -237,6 +241,34 @@ static int parse_rule_options(char **text, rule_t *rule) {
                 bit = 512u;
                 rule->has_max_age = 1;
                 if (parse_quantity(value, 1, &rule->max_age) != 0) return -1;
+            } else if (strcmp(token, "conflict") == 0) {
+                bit = 1024u;
+                if (strcmp(value, "fail") == 0) rule->action.conflict = CONFLICT_FAIL;
+                else if (strcmp(value, "skip") == 0) rule->action.conflict = CONFLICT_SKIP;
+                else if (strcmp(value, "rename") == 0) rule->action.conflict = CONFLICT_RENAME;
+                else if (strcmp(value, "overwrite") == 0) rule->action.conflict = CONFLICT_OVERWRITE;
+                else return -1;
+                rule->action.option_flags |= bit;
+            } else if (strcmp(token, "retries") == 0) {
+                bit = 2048u;
+                uint64_t number;
+                if (parse_quantity(value, 0, &number) != 0 || strspn(value, "0123456789") != strlen(value) || number > 5) return -1;
+                rule->action.retries = (int)number;
+                rule->action.option_flags |= bit;
+            } else if (strcmp(token, "backoff") == 0) {
+                bit = 4096u;
+                char *end;
+                errno = 0;
+                long number = strtol(value, &end, 10);
+                if (end == value || errno || strcmp(end, "ms") != 0 || number < 1 || number > 5000) return -1;
+                rule->action.backoff_ms = (int)number;
+                rule->action.option_flags |= bit;
+            } else if (strcmp(token, "timeout") == 0) {
+                bit = 8192u;
+                uint64_t number;
+                if (parse_quantity(value, 1, &number) != 0 || number < 1 || number > 300) return -1;
+                rule->action.timeout_seconds = (int)number;
+                rule->action.option_flags |= bit;
             } else return -1;
         }
         if (seen & bit) return -1;
@@ -363,6 +395,9 @@ int load_config(const char *path, config_t *config) {
             rule_t *rule = &config->rules[config->rule_count];
             memset(rule, 0, sizeof(*rule));
             rule->enabled = 1;
+            rule->action.retries = 2;
+            rule->action.backoff_ms = 100;
+            rule->action.timeout_seconds = 30;
             rule->line_no = line_no;
             snprintf(rule->name, sizeof(rule->name), "@line-%d", line_no);
             if (strcmp(directive, "rule") == 0) {
@@ -412,14 +447,46 @@ int load_config(const char *path, config_t *config) {
                     fclose(file);
                     return -1;
                 }
-            } else if (rule->action.type == ACTION_MOVE) {
-                if (parse_word(&text, rule->action.target, sizeof(rule->action.target)) != 0) {
-                    log_error("config %s:%d: move action requires a target path", path, line_no);
-                    fclose(file);
-                    return -1;
+            } else if (rule->action.type == ACTION_MOVE || rule->action.type == ACTION_COPY ||
+                       rule->action.type == ACTION_ARCHIVE || rule->action.type == ACTION_EXEC) {
+                char storage[1024];
+                char *arguments[FILEWARD_MAX_ARGS + 1];
+                int count = action_split_command(text, storage, sizeof(storage), arguments);
+                if (rule->action.type == ACTION_EXEC) {
+                    if (count < 1 || arguments[0][0] != '/' || strchr(arguments[0], '{') || strchr(arguments[0], '}') ||
+                        strlen(trim_whitespace(text)) >= sizeof(rule->action.command)) {
+                        log_error("config %s:%d: exec requires a literal absolute executable and valid quoted arguments", path, line_no);
+                        fclose(file);
+                        return -1;
+                    }
+                    for (int i = 0; i < count; i++) {
+                        if (action_validate_template(arguments[i]) != 0) {
+                            log_error("config %s:%d: invalid exec argument template", path, line_no);
+                            fclose(file);
+                            return -1;
+                        }
+                    }
+                    strcpy(rule->action.command, trim_whitespace(text));
+                } else {
+                    if (count != 1 || arguments[0][0] == '\0' || strlen(arguments[0]) >= sizeof(rule->action.target) ||
+                        action_validate_template(arguments[0]) != 0) {
+                        log_error("config %s:%d: %s requires one destination directory with valid templates", path, line_no, action_token);
+                        fclose(file);
+                        return -1;
+                    }
+                    strcpy(rule->action.target, arguments[0]);
                 }
+                text += strlen(text);
             } else {
                 log_error("config %s:%d: unknown action '%s'", path, line_no, action_token);
+                fclose(file);
+                return -1;
+            }
+            unsigned file_options = 1024u | 2048u | 4096u;
+            if (((rule->action.option_flags & file_options) &&
+                 rule->action.type != ACTION_MOVE && rule->action.type != ACTION_COPY && rule->action.type != ACTION_ARCHIVE) ||
+                ((rule->action.option_flags & 8192u) && rule->action.type != ACTION_EXEC)) {
+                log_error("config %s:%d: action options do not apply to %s", path, line_no, action_token);
                 fclose(file);
                 return -1;
             }

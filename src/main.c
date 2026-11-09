@@ -417,10 +417,11 @@ static int dispatch_event(runtime_context_t *context, const file_event_t *event)
 
         matched++;
         log_info("rule '%s' (line %d) matched %s", rule->name, rule->line_no, event->filename);
-        if (execute_action(&rule->action, context->config->watch_path, event->filename, event->type, context->dry_run) != 0) {
-            log_error("rule '%s': action failed for %s", rule->name, event->filename);
-        } else if (!context->dry_run && context->state_file_path != NULL && context->state_file_path[0] != '\0') {
-            const char *action_name = rule->action.type == ACTION_LOG ? "log" : "move";
+        int action_result = execute_action(&rule->action, context->config->watch_path, event->filename, event->type, context->dry_run);
+        if (action_result < 0) {
+            log_error("rule '%s': action failed for %s: %s", rule->name, event->filename, strerror(errno));
+        } else if (action_result == 0 && !context->dry_run && context->state_file_path != NULL && context->state_file_path[0] != '\0') {
+            const char *action_name = action_type_name(rule->action.type);
             append_state_event(context->state_file_path, context->config->watch_path, event->filename, event->type, action_name);
         }
         if (context->config->first_match || rule->stop) {
@@ -634,9 +635,17 @@ static int describe_matching_rules(const char *relative_path, event_type_t event
         printf("  priority: %d\n", rule->priority);
         printf("  event: %s\n", event_type_to_string(rule->event));
         printf("  pattern: %s\n", rule->path_glob);
-        printf("  action: %s\n", rule->action.type == ACTION_LOG ? "log" : "move");
-        if (rule->action.type == ACTION_MOVE) {
+        printf("  action: %s\n", action_type_name(rule->action.type));
+        if (rule->action.type == ACTION_MOVE || rule->action.type == ACTION_COPY || rule->action.type == ACTION_ARCHIVE) {
             printf("  target: %s\n", rule->action.target);
+            char preview[PATH_MAX];
+            if (action_expand_target(rule->action.target, config->watch_path, relative_path, event, preview) == 0) {
+                printf("  expanded target: %s\n", preview);
+            }
+            printf("  conflict: %s\n  retries: %d (backoff %dms)\n", conflict_policy_name(rule->action.conflict),
+                   rule->action.retries, rule->action.backoff_ms);
+        } else if (rule->action.type == ACTION_EXEC) {
+            printf("  command: %s\n  timeout: %ds\n", rule->action.command, rule->action.timeout_seconds);
         } else if (rule->action.type == ACTION_LOG && rule->action.message[0] != '\0') {
             printf("  message: %s\n", rule->action.message);
         }
@@ -737,6 +746,7 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
     signal(SIGHUP, handle_signal);
+    action_set_running_flag(&running);
 
     if (start_watcher(watch_root) != 0) {
         notify_startup(0);

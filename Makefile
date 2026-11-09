@@ -46,6 +46,7 @@ check: build
 	bash tests/daemon-smoke.sh ./$(BINARY)
 	bash tests/rules-smoke.sh ./$(BINARY)
 	bash tests/rules-v07-smoke.sh ./$(BINARY)
+	python3 tests/actions-smoke.py ./$(BINARY)
 
 run: build
 	mkdir -p $(HOME)/Downloads

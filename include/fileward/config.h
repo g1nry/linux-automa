@@ -21,11 +21,27 @@ typedef enum {
 typedef enum {
     ACTION_LOG,
     ACTION_MOVE,
+    ACTION_COPY,
+    ACTION_ARCHIVE,
+    ACTION_EXEC,
     ACTION_UNKNOWN,
 } action_type_t;
 
+typedef enum {
+    CONFLICT_FAIL,
+    CONFLICT_SKIP,
+    CONFLICT_RENAME,
+    CONFLICT_OVERWRITE,
+} conflict_policy_t;
+
 typedef struct {
     action_type_t type;
+    conflict_policy_t conflict;
+    unsigned option_flags;
+    int retries;
+    int backoff_ms;
+    int timeout_seconds;
+    char command[1024];
     char target[PATH_MAX];
     char message[FILEWARD_MAX_MESSAGE];
 } action_t;
