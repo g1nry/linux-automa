@@ -5,7 +5,7 @@ ConditionPathExists=/etc/fileward/%i.conf
 [Service]
 Type=simple
 User=%i
-ExecStart=/usr/local/bin/fileward run --config /etc/fileward/%i.conf
+ExecStart=/usr/local/bin/fileward run --config /etc/fileward/%i.conf --journal /var/log/fileward/%i/events.jsonl
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=2s
