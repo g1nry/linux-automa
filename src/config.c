@@ -139,6 +139,18 @@ static int read_optional_message(char **text, char *buffer, size_t buffer_size) 
     return 0;
 }
 
+static int valid_rule_name(const char *name) {
+    if (*name == '\0') {
+        return 0;
+    }
+    for (const unsigned char *p = (const unsigned char *)name; *p; p++) {
+        if (!isalnum(*p) && *p != '_' && *p != '-' && *p != '.') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 int load_config(const char *path, config_t *config) {
     if (path == NULL || config == NULL) {
         log_error("invalid config arguments");
@@ -159,14 +171,22 @@ int load_config(const char *path, config_t *config) {
 
     while (fgets(line, sizeof(line), file) != NULL) {
         line_no++;
+        if (strchr(line, '\n') == NULL && !feof(file)) {
+            int next = fgetc(file);
+            if (next != EOF && next != '\n') {
+                log_error("config %s:%d: line is too long", path, line_no);
+                fclose(file);
+                return -1;
+            }
+        }
         char *text = trim_whitespace(line);
 
         if (*text == '\0' || *text == '#') {
             continue;
         }
 
-        if (strncmp(text, "watch ", 6) == 0) {
-            text += 6;
+        if (strncmp(text, "watch", 5) == 0 && (text[5] == '\0' || isspace((unsigned char)text[5]))) {
+            text += 5;
             text = trim_whitespace(text);
 
             if (*text == '\0') {
@@ -176,8 +196,9 @@ int load_config(const char *path, config_t *config) {
             }
 
             if (config->watch_path[0] != '\0') {
-                log_warn("config %s:%d: multiple watch directives, ignoring", path, line_no);
-                continue;
+                log_error("config %s:%d: multiple watch directives", path, line_no);
+                fclose(file);
+                return -1;
             }
 
             char expanded_watch_path[PATH_MAX];
@@ -197,18 +218,57 @@ int load_config(const char *path, config_t *config) {
             continue;
         }
 
-        if (strncmp(text, "when ", 5) == 0) {
+        char directive[32];
+        if (parse_word(&text, directive, sizeof(directive)) != 0) {
+            log_error("config %s:%d: invalid directive", path, line_no);
+            fclose(file);
+            return -1;
+        }
+        if (strcmp(directive, "when") == 0 || strcmp(directive, "rule") == 0) {
             if (config->rule_count >= FILEWARD_MAX_RULES) {
                 log_error("config %s:%d: too many rules", path, line_no);
                 fclose(file);
                 return -1;
             }
 
-            text += 5;
             char event_token[32];
             char path_glob[PATH_MAX];
             char action_token[32];
             rule_t *rule = &config->rules[config->rule_count];
+            memset(rule, 0, sizeof(*rule));
+            rule->enabled = 1;
+            rule->line_no = line_no;
+            snprintf(rule->name, sizeof(rule->name), "@line-%d", line_no);
+            if (strcmp(directive, "rule") == 0) {
+                char token[32];
+                if (parse_word(&text, rule->name, sizeof(rule->name)) != 0 ||
+                    !valid_rule_name(rule->name)) {
+                    log_error("config %s:%d: invalid rule name (use letters, digits, _, - or .)", path, line_no);
+                    fclose(file);
+                    return -1;
+                }
+                for (int i = 0; i < config->rule_count; i++) {
+                    if (strcmp(config->rules[i].name, rule->name) == 0) {
+                        log_error("config %s:%d: duplicate rule name '%s'", path, line_no, rule->name);
+                        fclose(file);
+                        return -1;
+                    }
+                }
+                if (parse_word(&text, token, sizeof(token)) != 0) {
+                    token[0] = '\0';
+                }
+                if (strcmp(token, "disabled") == 0 || strcmp(token, "enabled") == 0) {
+                    rule->enabled = strcmp(token, "enabled") == 0;
+                    if (parse_word(&text, token, sizeof(token)) != 0) {
+                        token[0] = '\0';
+                    }
+                }
+                if (strcmp(token, "when") != 0) {
+                    log_error("config %s:%d: expected 'when' after rule name and optional enabled/disabled", path, line_no);
+                    fclose(file);
+                    return -1;
+                }
+            }
 
             if (parse_word(&text, event_token, sizeof(event_token)) != 0 ||
                 parse_word(&text, path_glob, sizeof(path_glob)) != 0 ||
@@ -248,13 +308,25 @@ int load_config(const char *path, config_t *config) {
                 return -1;
             }
 
+            if (*trim_whitespace(text) != '\0') {
+                log_error("config %s:%d: unexpected trailing arguments", path, line_no);
+                fclose(file);
+                return -1;
+            }
             config->rule_count++;
             continue;
         }
 
-        log_warn("config %s:%d: unknown directive: %s", path, line_no, text);
+        log_error("config %s:%d: unknown directive: %s", path, line_no, directive);
+        fclose(file);
+        return -1;
     }
 
+    if (ferror(file)) {
+        log_error("cannot read config '%s': %s", path, strerror(errno));
+        fclose(file);
+        return -1;
+    }
     fclose(file);
 
     if (config->watch_path[0] == '\0') {

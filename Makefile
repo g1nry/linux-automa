@@ -15,7 +15,7 @@ help:
 	@echo "Available targets:"
 	@echo "  make setup          Configure Meson build directory"
 	@echo "  make build          Build fileward"
-	@echo "  make check          Build and run a basic CLI sanity check"
+	@echo "  make check          Build and run unit, CLI and smoke tests"
 	@echo "  make run            Run fileward against ~/Downloads"
 	@echo "  make clean          Remove build directory"
 	@echo "  make install-user   Install and start user systemd service"
@@ -41,6 +41,10 @@ check: build
 		cat /tmp/fileward-check.out; \
 		exit 1; \
 	fi
+	meson test -C $(BUILD_DIR) --print-errorlogs
+	bash tests/service-smoke.sh ./$(BINARY)
+	bash tests/daemon-smoke.sh ./$(BINARY)
+	bash tests/rules-smoke.sh ./$(BINARY)
 
 run: build
 	mkdir -p $(HOME)/Downloads

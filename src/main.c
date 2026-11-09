@@ -7,7 +7,7 @@
 
 #include <fileward/action.h>
 #include <fileward/config.h>
-#include <fileward/glob.h>
+#include <fileward/rules.h>
 #include <fileward/log.h>
 #include <fileward/watcher.h>
 
@@ -93,6 +93,7 @@ static void print_usage(const char *program_name) {
     fprintf(stderr, "       %s status [--pidfile <file>]\n", program_name);
     fprintf(stderr, "       %s reload [--pidfile <file>]\n", program_name);
     fprintf(stderr, "       %s test [--config <file>] <path>\n", program_name);
+    fprintf(stderr, "       %s validate --config <file>\n", program_name);
     fprintf(stderr, "       %s explain --config <file> [--event <event>] <path>\n", program_name);
 }
 
@@ -117,6 +118,7 @@ static void print_help(const char *program_name) {
     fprintf(stderr, "  status   show whether the daemon is running\n");
     fprintf(stderr, "  reload   reload config for an already-running daemon\n");
     fprintf(stderr, "  test     validate a path and show rule matches for a config\n");
+    fprintf(stderr, "  validate validate config syntax without starting a watcher\n");
     fprintf(stderr, "  explain  explain which rules would match a path for an event\n");
     fprintf(stderr, "\nOptions:\n");
     fprintf(stderr, "  --config <file>    load rules from a config file\n");
@@ -400,16 +402,14 @@ static int dispatch_event(runtime_context_t *context, const file_event_t *event)
     int matched = 0;
     for (int i = 0; i < context->config->rule_count; i++) {
         const rule_t *rule = &context->config->rules[i];
-        if (rule->event != event->type) {
-            continue;
-        }
-        if (!glob_match(rule->path_glob, event->filename)) {
+        if (evaluate_rule(rule, event->type, event->filename) != RULE_MATCH) {
             continue;
         }
 
         matched++;
+        log_info("rule '%s' (line %d) matched %s", rule->name, rule->line_no, event->filename);
         if (execute_action(&rule->action, context->config->watch_path, event->filename, event->type, context->dry_run) != 0) {
-            log_error("action failed for %s", event->filename);
+            log_error("rule '%s': action failed for %s", rule->name, event->filename);
             continue;
         }
         if (!context->dry_run && context->state_file_path != NULL && context->state_file_path[0] != '\0') {
@@ -557,19 +557,23 @@ static int path_within_root(const char *root, const char *target, char *relative
     return 1;
 }
 
-static int describe_matching_rules(const char *relative_path, event_type_t event, const config_t *config) {
+static int describe_matching_rules(const char *relative_path, event_type_t event, const config_t *config, int explain) {
     int matched = 0;
     for (int i = 0; i < config->rule_count; i++) {
         const rule_t *rule = &config->rules[i];
-        if (rule->event != event) {
-            continue;
-        }
-        if (!glob_match(rule->path_glob, relative_path)) {
+        rule_result_t result = evaluate_rule(rule, event, relative_path);
+        if (result != RULE_MATCH) {
+            if (explain) {
+                printf("Rule %s (line %d): skipped: %s\n", rule->name, rule->line_no,
+                       rule_result_description(result));
+                printf("  event: %s\n  pattern: %s\n", event_type_to_string(rule->event), rule->path_glob);
+            }
             continue;
         }
 
         matched++;
         printf("Match %d:\n", matched);
+        printf("  rule: %s (line %d)\n", rule->name, rule->line_no);
         printf("  event: %s\n", event_type_to_string(rule->event));
         printf("  pattern: %s\n", rule->path_glob);
         printf("  action: %s\n", rule->action.type == ACTION_LOG ? "log" : "move");
@@ -879,7 +883,7 @@ static int test_command(int argc, char *argv[]) {
     printf("watch root: %s\n", watch_root);
     printf("relative path: %s\n", relative);
     printf("matching rules for created event:\n");
-    int matched = describe_matching_rules(relative, EVENT_CREATED, &config);
+    int matched = describe_matching_rules(relative, EVENT_CREATED, &config, 0);
     if (matched == 0) {
         printf("  no rules match this path for created event\n");
     }
@@ -957,12 +961,34 @@ static int explain_command(int argc, char *argv[]) {
     printf("watch root: %s\n", watch_root);
     printf("relative path: %s\n", relative);
 
-    int matched = describe_matching_rules(relative, event, &config);
+    int matched = describe_matching_rules(relative, event, &config, 1);
     if (matched == 0) {
         printf("no matching rules\n");
     }
 
     return 0;
+}
+
+static int validate_command(int argc, char *argv[]) {
+    if (argc == 1 && is_help_arg(argv[0])) {
+        fprintf(stderr, "Usage: fileward validate --config <file>\n");
+        return EXIT_OK;
+    }
+    if (argc != 2 || strcmp(argv[0], "--config") != 0) {
+        fprintf(stderr, "Usage: fileward validate --config <file>\n");
+        return EXIT_USAGE;
+    }
+    config_t config;
+    if (load_config(argv[1], &config) != 0) {
+        return EXIT_CONFIG;
+    }
+    int enabled = 0;
+    for (int i = 0; i < config.rule_count; i++) {
+        enabled += config.rules[i].enabled;
+    }
+    printf("config valid: %s\nwatch root: %s\nrules: %d (%d enabled, %d disabled)\n",
+           argv[1], config.watch_path, config.rule_count, enabled, config.rule_count - enabled);
+    return EXIT_OK;
 }
 
 int main(int argc, char *argv[]) {
@@ -986,6 +1012,9 @@ int main(int argc, char *argv[]) {
     }
     if (strcmp(command, "reload") == 0) {
         return reload_command(argc - 2, argv + 2);
+    }
+    if (strcmp(command, "validate") == 0) {
+        return validate_command(argc - 2, argv + 2);
     }
     if (strcmp(command, "test") == 0) {
         return test_command(argc - 2, argv + 2);

@@ -5,6 +5,7 @@
 
 #define FILEWARD_MAX_RULES 64
 #define FILEWARD_MAX_MESSAGE 256
+#define FILEWARD_MAX_RULE_NAME 64
 
 typedef enum {
     EVENT_CREATED,
@@ -28,6 +29,9 @@ typedef struct {
 } action_t;
 
 typedef struct {
+    char name[FILEWARD_MAX_RULE_NAME];
+    int enabled;
+    int line_no;
     event_type_t event;
     char path_glob[PATH_MAX];
     action_t action;
