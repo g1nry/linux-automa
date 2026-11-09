@@ -79,12 +79,12 @@ meson compile -C build
 Подготовка примера и справка (команды выполняются из корня репозитория):
 
 ```bash
-mkdir -p ~/Downloads
+mkdir -p ~/Downloads/FilewardLab/{inbox,staging}
 test -e fileward.conf || cp example.conf fileward.conf
 ./build/fileward help
 ```
 
-Пример конфига перемещает новые PDF-файлы. Сначала можно посмотреть предполагаемые действия через `--dry-run`. Без конфига программа только выводит события. Для остановки обычного запуска нажмите `Ctrl+C`.
+В репозитории один общий пример — `example.conf`; `fileward.conf` — его локальная копия, исключённая из Git. Пример использует отдельную песочницу `~/Downloads/FilewardLab`: сначала копирует входящие файлы, создаёт gzip-копии TXT, затем перемещает оригиналы по правилам. `exec` отключён по умолчанию. Файлы готовят в `staging` и переносят в `inbox` во время работы watcher. Сначала можно посмотреть предполагаемые действия через `--dry-run`. Без конфига программа только выводит события. Для остановки обычного запуска нажмите `Ctrl+C`.
 
 Запуск:
 
@@ -127,13 +127,13 @@ make run
 Проверка пути и правил (файл должен существовать внутри `watch`; действия не выполняются):
 
 ```bash
-./build/fileward test --config fileward.conf ~/Downloads/report.pdf
+./build/fileward test --config fileward.conf ~/Downloads/FilewardLab/inbox/report.pdf
 ```
 
 Объяснение совпадений:
 
 ```bash
-./build/fileward explain --config fileward.conf --event created ~/Downloads/report.pdf
+./build/fileward explain --config fileward.conf --event moved_to ~/Downloads/FilewardLab/inbox/report.pdf
 ```
 
 Перезагрузка конфигурации через SIGHUP:
@@ -297,6 +297,8 @@ cc -std=c11 -Wall -Wextra -Isrc -Iinclude src/main.c src/watcher.c src/log.c src
 
 ## Пример конфигурации
 
+Полный пример правил и действий находится в `example.conf`. Ниже — минимальный фрагмент старого синтаксиса, который также поддерживается.
+
 ```text
 watch ~/Downloads
 
@@ -318,7 +320,7 @@ touch "$demo_dir/watch/report.txt"
 Быстрый запуск в фоне:
 
 ```bash
-mkdir -p ~/Downloads "$HOME/.local/state/fileward"
+mkdir -p ~/Downloads/FilewardLab/{inbox,staging} "$HOME/.local/state/fileward"
 ./build/fileward start --config example.conf \
   --pidfile "$HOME/.local/state/fileward/fileward.pid" \
   --log-file "$HOME/.local/state/fileward/fileward.log" \
@@ -466,7 +468,7 @@ when created ** log "allowed file"
 
 ## Действия v0.8
 
-Готовый пример — `example-actions.conf`. Все назначения `move`, `copy`, `archive` задают **каталог**, к которому исполнитель добавляет исходное имя файла; `archive` также добавляет `.gz`. Относительные пути считаются от рабочей папки запуска. `~/` раскрывается в начале каталога назначения.
+Общий пример всех возможностей — `example.conf` (рабочая локальная копия — `fileward.conf`). Все назначения `move`, `copy`, `archive` задают **каталог**, к которому исполнитель добавляет исходное имя файла; `archive` также добавляет `.gz`. Относительные пути считаются от рабочей папки запуска. `~/` раскрывается в начале каталога назначения.
 
 ```text
 watch ~/Downloads/FilewardActions/inbox
