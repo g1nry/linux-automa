@@ -45,6 +45,7 @@ check: build
 	bash tests/service-smoke.sh ./$(BINARY)
 	bash tests/daemon-smoke.sh ./$(BINARY)
 	bash tests/rules-smoke.sh ./$(BINARY)
+	bash tests/rules-v07-smoke.sh ./$(BINARY)
 
 run: build
 	mkdir -p $(HOME)/Downloads
