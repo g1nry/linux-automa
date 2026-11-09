@@ -1,0 +1,24 @@
+[Unit]
+Description=Fileward local automation daemon
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStartPre=@BINARY@ validate --config @CONFIG@
+ExecStart=@BINARY@ run --systemd --config @CONFIG@ --journal @JOURNAL@ --control-socket @CONTROL@
+ExecStartPost=@BINARY@ health --socket @CONTROL@
+ExecReload=@BINARY@ reload --socket @CONTROL@
+WorkingDirectory=~
+Restart=on-failure
+RestartSec=2s
+WatchdogSec=20s
+TimeoutStartSec=30s
+TimeoutStopSec=10s
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
