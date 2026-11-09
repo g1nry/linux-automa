@@ -184,6 +184,36 @@ int main(void) {
     CHECK(parse(text) == 0);
     strcat(text, "ignore *.part\n");
     CHECK(parse(text) != 0);
+    CHECK(parse("watch /tmp\nrule copy conflict=rename retries=5 backoff=5000ms when created * copy \"/tmp/output with spaces/{ext}\"\n") == 0);
+    CHECK(config.rules[0].action.type == ACTION_COPY && config.rules[0].action.retries == 5);
+    CHECK(parse("watch /tmp\nrule gzip when created * archive /tmp/archive/{date}\n") == 0);
+    CHECK(parse("watch /tmp\nrule command timeout=5m when created * exec /bin/echo \"{path}\" ''\n") == 0);
+    static const char *bad_actions[] = {
+        "conflict=unknown when created * copy /tmp/out",
+        "conflict=fail conflict=skip when created * copy /tmp/out",
+        "retries=-1 when created * copy /tmp/out",
+        "retries=6 when created * copy /tmp/out",
+        "backoff=0ms when created * copy /tmp/out",
+        "backoff=1s when created * copy /tmp/out",
+        "backoff=5001ms when created * copy /tmp/out",
+        "timeout=0s when created * exec /bin/true",
+        "timeout=301s when created * exec /bin/true",
+        "timeout=1s timeout=2s when created * exec /bin/true",
+        "conflict=fail when created * log hello",
+        "retries=1 when created * exec /bin/true",
+        "timeout=1s when created * copy /tmp/out",
+        "when created * copy /tmp/out extra",
+        "when created * copy /tmp/{unknown}",
+        "when created * archive",
+        "when created * exec echo hello",
+        "when created * exec /bin/{name}",
+        "when created * exec /bin/echo \"{unknown}\"",
+        "when created * exec /bin/echo 'unclosed",
+    };
+    for (unsigned i = 0; i < sizeof(bad_actions) / sizeof(bad_actions[0]); i++) {
+        snprintf(text, sizeof(text), "watch /tmp\nrule invalid %s\n", bad_actions[i]);
+        CHECK(parse(text) != 0);
+    }
     puts("rules tests passed");
     return 0;
 }

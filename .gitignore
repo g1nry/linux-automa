@@ -1,9 +1,27 @@
-docs/
+# Local configuration and private project notes
+/fileward.conf
+/docs/
 
-build/
-.cache/
-compile_commands.json
-fileward.conf
-
+# Meson/Ninja build directories and compiler output
+/build/
+/build-*/
+/compile_commands.json
 *.o
+*.a
+*.so
+*.so.*
+
+# Runtime logs, daemon locks and action journals
 *.log
+*.pid
+*.state
+
+# Local caches and Python test bytecode
+/.cache/
+__pycache__/
+*.py[cod]
+
+# Editor temporary files (shared .vscode settings remain tracked)
+*~
+*.swp
+*.swo
