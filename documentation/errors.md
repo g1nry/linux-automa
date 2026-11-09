@@ -1,55 +1,57 @@
-# Error and status codes
+# Коды ошибок и состояний
 
-Symbolic codes are the stable contract; numeric errno is the local Linux detail.
-An error has outcome=failure. Some FW_* codes describe a deliberate skip/cancellation.
-Messages can change without changing codes. Exit codes remain 0 success, 1 usage/path,
-2 configuration, 3 runtime/journal. Startup failures that cannot write JSON use coded stderr.
+Символьные коды являются устойчивым контрактом; числовой `errno` уточняет локальную
+ошибку Linux. Отказ имеет `outcome=failure`. Некоторые коды `FW_*` описывают
+намеренный пропуск или отмену. Текст сообщения может меняться без смены кода.
+Коды завершения программы: 0 — успех, 1 — ошибка аргументов или пути,
+2 — ошибка конфигурации, 3 — ошибка исполнения или журнала. Если при отказе запуска
+невозможно записать JSON, кодированная диагностика выводится в stderr.
 
-| Code | Meaning |
+| Код | Значение |
 | --- | --- |
-| `FW_CANCELLED` | Active operation cooperatively cancelled. |
-| `FW_CONFIG_INVALID` | Initial configuration rejected. |
-| `FW_CONFLICT_SKIP` | Explicit skip policy preserved existing output. |
-| `FW_DESTINATION_EXISTS` | fail policy encountered a collision. |
-| `FW_DIAGNOSTIC_ERROR` | Human diagnostic counterpart; inspect linked typed records for specific cause. |
-| `FW_DIRECTORY_REWATCH` | Subtree detached/re-added; no replay of preexisting entries. |
-| `FW_DISK_FULL` | No space/quota. |
-| `FW_EVENT_COALESCED` | Pending modification refreshed; raw observation remains recorded. |
-| `FW_EXEC_EXIT` | Command exited nonzero; exit_code contains the status. |
-| `FW_EXEC_FAILED` | Other process supervision failure. |
-| `FW_EXEC_SIGNAL` | Command terminated by signal. |
-| `FW_EXEC_START` | posix_spawn could not start executable; errno identifies cause. |
-| `FW_EXEC_TIMEOUT` | Command exceeded timeout. |
-| `FW_FD_LIMIT` | Descriptor resources exhausted. |
-| `FW_FILE_NOT_FOUND` | File gone or source path missing. |
-| `FW_INOTIFY_OVERFLOW` | Kernel queue overflow; observation gap. |
-| `FW_INVALID_ARGUMENT` | Invalid path/template/self-copy or operation argument. |
-| `FW_IO_ERROR` | Other OS I/O error; inspect errno and message. |
-| `FW_JOURNAL_OPEN` | Cannot open/lock journal, invalid type/symlink or incomplete tail. |
-| `FW_JOURNAL_READ` | History/stats could not read or validate retained records. |
-| `FW_JOURNAL_SYNC` | Final fsync failed. |
-| `FW_JOURNAL_WRITE` | Append/rotation/sync failed; runtime stops (stderr if journal unavailable). |
-| `FW_MEMORY_LIMIT` | Allocation/resource limit. |
-| `FW_OK` | Normal observation or successful operation. |
-| `FW_OUTPUT_INSIDE_WATCH` | Journal/log/state path would observe itself. |
-| `FW_PATH_FILTERED` | ignore/deny/allow excluded this event. |
-| `FW_PATH_TOO_LONG` | Expanded path/argument exceeds bounds. |
-| `FW_PERMISSION_DENIED` | Insufficient permissions. |
-| `FW_QUEUE_FULL` | Bounded queue saturated; this observation was not executed. |
-| `FW_READY_TIMEOUT` | File never met readiness conditions within the configured deadline. |
-| `FW_RELOAD_REJECTED` | Reload invalid or root changed; old snapshot retained. |
-| `FW_RESOURCE_BUSY` | Transient busy condition. |
-| `FW_RULE_MISMATCH` | Rule disabled or conditions did not match; see message. |
-| `FW_RUNTIME_FAILED` | Runtime stopped after a fatal error. |
-| `FW_SHUTDOWN` | Pending job cancelled during shutdown. |
-| `FW_SOURCE_CHANGED` | Source changed during copying; bounded retry may follow. |
-| `FW_SOURCE_REPLACED` | The observed inode was replaced, or source changed after publication. |
-| `FW_STATE_WRITE` | Compatibility TSV could not be appended. |
-| `FW_SYMLINK_REJECTED` | Operation does not follow source symlink. |
-| `FW_UNSUPPORTED_OBJECT` | Directory/FIFO/device or unsupported move source. |
-| `FW_WATCHER_IO` | Watcher loop stopped after I/O/callback error. |
-| `FW_WATCHER_START` | Initial watcher setup failed. |
-| `FW_WATCH_ADD` | Could not add a directory watch; coverage degraded. |
-| `FW_WATCH_LIMIT` | 512-directory application limit reached. |
-| `FW_WATCH_LOST` | Root removed/renamed/unmounted; runtime exits. |
-| `FW_WORKER_START` | Worker-pool initialization failed. |
+| `FW_CANCELLED` | Активная операция получила запрос отмены и прервала выполнение. |
+| `FW_CONFIG_INVALID` | Начальная конфигурация отклонена. |
+| `FW_CONFLICT_SKIP` | Явная политика пропуска сохранила существующее назначение. |
+| `FW_DESTINATION_EXISTS` | Политика `fail` обнаружила конфликт имени назначения. |
+| `FW_DIAGNOSTIC_ERROR` | Структурированная копия диагностики для человека; конкретную причину смотрите в связанных типизированных записях. |
+| `FW_DIRECTORY_REWATCH` | Поддерево отсоединено или подписано заново; существующие файлы не обрабатываются повторно. |
+| `FW_DISK_FULL` | Недостаточно места или исчерпана квота. |
+| `FW_EVENT_COALESCED` | Ожидающая модификация обновлена; исходное наблюдение остаётся в журнале. |
+| `FW_EXEC_EXIT` | Команда завершилась с ненулевым кодом; значение находится в `exit_code`. |
+| `FW_EXEC_FAILED` | Другой отказ управления дочерним процессом. |
+| `FW_EXEC_SIGNAL` | Команда завершена сигналом. |
+| `FW_EXEC_START` | `posix_spawn` не смог запустить программу; причину уточняет `errno`. |
+| `FW_EXEC_TIMEOUT` | Команда превысила таймаут. |
+| `FW_FD_LIMIT` | Исчерпан лимит файловых дескрипторов. |
+| `FW_FILE_NOT_FOUND` | Файл исчез или исходный путь отсутствует. |
+| `FW_INOTIFY_OVERFLOW` | Переполнена очередь ядра; возник пропуск наблюдения. |
+| `FW_INVALID_ARGUMENT` | Неверный путь, шаблон, попытка копирования в себя или другой недопустимый аргумент операции. |
+| `FW_IO_ERROR` | Другая ошибка ввода-вывода ОС; проверьте `errno` и сообщение. |
+| `FW_JOURNAL_OPEN` | Не удалось открыть или заблокировать журнал: недопустимый тип, симлинк, незавершённый хвост либо другая ошибка открытия. |
+| `FW_JOURNAL_READ` | Команда `history` или `stats` не смогла прочитать либо проверить сохранённые записи. |
+| `FW_JOURNAL_SYNC` | Итоговый `fsync` завершился ошибкой. |
+| `FW_JOURNAL_WRITE` | Отказ добавления, ротации или синхронизации; исполнение останавливается, диагностика выводится в stderr, если журнал недоступен. |
+| `FW_MEMORY_LIMIT` | Ошибка выделения памяти или ограничение ресурсов. |
+| `FW_OK` | Обычное наблюдение или успешная операция. |
+| `FW_OUTPUT_INSIDE_WATCH` | Путь журнала, лога или файла состояния попал в наблюдаемое дерево и создал бы самонаблюдение. |
+| `FW_PATH_FILTERED` | Фильтры `ignore`/`deny`/`allow` исключили событие. |
+| `FW_PATH_TOO_LONG` | Раскрытый путь или аргумент превысил допустимую длину. |
+| `FW_PERMISSION_DENIED` | Недостаточно прав доступа. |
+| `FW_QUEUE_FULL` | Ограниченная очередь заполнена; это наблюдение не передано на исполнение. |
+| `FW_READY_TIMEOUT` | Файл не достиг готовности за установленное время. |
+| `FW_RELOAD_REJECTED` | Новая конфигурация некорректна или изменился корень; прежний снимок сохранён. |
+| `FW_RESOURCE_BUSY` | Временная занятость ресурса. |
+| `FW_RULE_MISMATCH` | Правило отключено или его условия не совпали; подробности находятся в сообщении. |
+| `FW_RUNTIME_FAILED` | Исполнение остановлено после критической ошибки. |
+| `FW_SHUTDOWN` | Ожидающее задание отменено при остановке. |
+| `FW_SOURCE_CHANGED` | Исходник изменился во время копирования; возможна ограниченная повторная попытка. |
+| `FW_SOURCE_REPLACED` | Наблюдаемый inode заменён либо исходник изменился после публикации результата. |
+| `FW_STATE_WRITE` | Не удалось добавить запись в совместимый TSV-файл состояния. |
+| `FW_SYMLINK_REJECTED` | Операция отклонила симлинк источника вместо перехода по нему. |
+| `FW_UNSUPPORTED_OBJECT` | Каталог, FIFO, устройство или другой неподдерживаемый источник перемещения. |
+| `FW_WATCHER_IO` | Цикл наблюдения остановлен после ошибки ввода-вывода или функции обратного вызова. |
+| `FW_WATCHER_START` | Начальная настройка наблюдателя завершилась ошибкой. |
+| `FW_WATCH_ADD` | Не удалось добавить наблюдение за каталогом; покрытие уменьшено. |
+| `FW_WATCH_LIMIT` | Достигнут внутренний лимит в 512 каталогов. |
+| `FW_WATCH_LOST` | Корень удалён, переименован или размонтирован; процесс завершается. |
+| `FW_WORKER_START` | Не удалось инициализировать пул рабочих потоков. |

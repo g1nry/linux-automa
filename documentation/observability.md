@@ -1,10 +1,11 @@
-# Journals, history and counters
+# Журналы, история и счётчики
 
-All run/start invocations produce JSONL. Default path:
-`$XDG_STATE_HOME/fileward/events.jsonl`, or `$HOME/.local/state/fileward/events.jsonl`.
-Use an absolute `--journal PATH` for services. Parent directories are created 0700; new
-journal/lock files are 0600. Journals, text logs, and legacy state files must be outside
-watch. Explicit paths are interpreted relative to the preserved launch directory.
+Все запуски `run`/`start` создают JSONL-журнал. Путь по умолчанию:
+`$XDG_STATE_HOME/fileward/events.jsonl` либо `$HOME/.local/state/fileward/events.jsonl`.
+Для сервисов задавайте абсолютный путь через `--journal PATH`. Родительские
+каталоги создаются с правами 0700, новые файлы журнала и блокировки — 0600.
+Журнал, текстовый лог и совместимый файл состояния должны находиться вне `watch`.
+Явно заданные относительные пути отсчитываются от сохранённой папки запуска.
 
 ```sh
 ./build/fileward run --config fileward.conf --journal /tmp/fileward/events.jsonl --workers 4
@@ -14,70 +15,100 @@ watch. Explicit paths are interpreted relative to the preserved launch directory
 ./build/fileward stats --journal /tmp/fileward/events.jsonl
 ```
 
-History emits the most recent action_result records as JSONL. --all includes the whole
-lifecycle, and --event-id includes a record and its direct children (use an observed file's
-ID to inspect its chain). Limit is 1..1000, default 50. Stats emits JSON counters for the
-retained segments: observations, readiness completions, completed chains, evaluated/matched
-rules, successful/skipped/cancelled actions, coded failures, retries, coalescing, dropped/cancelled
-jobs and diagnostic errors. A runtime failure and its diagnostic can coexist: failures
-excludes diagnostic/exec-detail records to avoid counting one action twice. It is not a
-count of unique incidents. Counters are reconstructed from disk, not erased on clean restart.
-They cover retained data, not lifetime totals or a transactional live snapshot.
+Команда `history` выводит последние записи `action_result` в формате JSONL.
+Флаг `--all` включает весь жизненный цикл, а `--event-id` выбирает запись и её
+непосредственные дочерние записи. Чтобы посмотреть цепочку файла, укажите ID
+его исходного наблюдения. Лимит — 1..1000 записей, по умолчанию 50.
 
-Default rotation is 64 MiB, retaining current + .1/.2/.3. Set --journal-max-bytes from 4096
-to 4294967296. A single record may exceed the configured segment size; it is never split by
-rotation. The per-process sequence/run_id survives rotation. A separate .lock enforces one
-writer per journal path. Separate daemon instances require separate journal paths. Don't
-remove/replace that lock while a writer runs, and don't externally rotate the file; use the
-built-in retention. Ensure collectors consume faster than segments expire.
+Команда `stats` выводит JSON-счётчики по сохранённым сегментам: наблюдения,
+завершения ожидания готовности, завершённые цепочки, проверенные и совпавшие
+правила, успешные, пропущенные и отменённые действия, отказы с кодами, повторные
+попытки, объединения, отброшенные и отменённые задания, диагностические ошибки.
+Отказ исполнения и его диагностика могут присутствовать одновременно: счётчик
+`failures` исключает диагностические записи и дополнительные сведения об `exec`,
+чтобы не считать одно действие дважды. Это не число уникальных инцидентов.
+Счётчики восстанавливаются с диска и не обнуляются при штатном перезапуске.
+Они охватывают сохранённые данные, а не всю историю программы или транзакционный
+снимок текущего состояния демона.
 
-Records are written immediately with write(2); there is no stdio output buffer on the
-journal. By default fsync occurs on rotation/clean close, so a power loss can lose the last
-kernel-buffered records. --journal-sync performs fdatasync per record, trading throughput
-for stronger local persistence. Neither mode guarantees remote delivery or exactly-once
-processing. Filesystem failure/ENOSPC/short writes stop the runtime with exit 3 and a
-FW_JOURNAL_WRITE diagnostic on stderr. The next startup rejects an incomplete tail rather
-than silently appending invalid JSON. Preserve the damaged segment for analysis and choose
-a new journal path or repair the saved file offline. Read-only queries skip a live incomplete
-last line, report malformed complete records, and return 3 on malformed/unreadable input. Queries read a finite size snapshot per segment even while the writer continues appending.
+По умолчанию ротация выполняется при 64 MiB; сохраняются текущий файл и
+`.1`/`.2`/`.3`. Параметр `--journal-max-bytes` принимает значения от 4096 до
+4294967296. Отдельная запись может превышать заданный размер сегмента: ротация
+не разрывает её на части. Значения `sequence` и `run_id` сохраняются при ротации.
+Отдельный файл `.lock` разрешает только одного писателя для пути журнала.
+Разным экземплярам демона нужны разные журналы. Не удаляйте и не заменяйте
+блокировку во время работы писателя. Используйте встроенную ротацию вместо
+внешнего переименования журнала. Коллектор должен успевать читать сегменты
+до их удаления по политике хранения.
 
-Text diagnostics are human-readable and serialized between threads. A corresponding
-`diagnostic` record is JSON-escaped; child stdout/stderr is NOT automatically parsed into
-JSON. The legacy --state-file TSV remains success-only and is serialized across workers.
-It is not lossless for unusual filenames; JSONL + path_base64 is the authoritative audit.
-Dry-run still produces audit records with dry_run=true, but action_result.outcome=dry_run
-and no action-success TSV row. Operator shutdown uses cancelled outcomes rather than failure alerts. Program exit codes remain 0/1/2/3 as before.
+Записи сразу передаются в `write(2)` без выходного буфера stdio. По умолчанию
+`fsync` выполняется при ротации и штатном закрытии, поэтому отключение питания
+может привести к потере последних записей из буфера ядра. Флаг `--journal-sync`
+выполняет `fdatasync` после каждой записи, снижая производительность ради более
+строгой локальной сохранности. Ни один режим не гарантирует удалённую доставку
+или обработку строго один раз.
 
-## Schema version 1
+Ошибка файловой системы, `ENOSPC` или неполная запись останавливают исполнение
+с кодом 3 и диагностикой `FW_JOURNAL_WRITE` в stderr. Следующий запуск отклоняет
+незавершённый хвост вместо добавления строк к повреждённому JSON. Сохраните
+повреждённый сегмент для анализа и выберите новый путь либо исправьте сохранённый
+файл вне работающего процесса. Запросы чтения пропускают незавершённую последнюю
+строку работающего писателя, сообщают о повреждённых полных записях и возвращают
+3 при повреждении или недоступности входных данных. Для каждого сегмента читается
+снимок конечного размера, даже если писатель продолжает добавлять записи.
 
-All records are flat JSON objects. The complete machine-readable schema is events.schema.json.
-Additive fields may be introduced within a schema version; consumers should ignore unknown
-fields and reject unsupported schema versions.
+Текстовая диагностика предназначена для человека и сериализуется между потоками.
+Соответствующая запись `diagnostic` экранируется для JSON. Вывод stdout/stderr
+дочерней команды автоматически в JSON не разбирается. Совместимый TSV-файл
+`--state-file` по-прежнему содержит только успешные действия; запись в него
+сериализуется между рабочими потоками. Необычные имена файлов могут потерять
+точное представление в TSV, поэтому основной источник аудита — JSONL вместе
+с `path_base64`.
 
-- provider=fileward, program_version: producer identification.
-- timestamp: UTC record creation time with milliseconds. This is observation/processing
-  time, not the original kernel operation timestamp (inotify does not supply that timestamp).
-- event_id: random 128-bit run_id + sequence. Parent_id links rule/action/readiness records
-  to the original file_observed ID; lifecycle records may have an empty parent.
-- host_id: /etc/machine-id when available, otherwise the run ID; host_name is informational.
-- daemon_pid: producer process, NEVER the user/process that modified the file.
-- kind/outcome/code: record classification, result and stable symbolic error code.
-- event_type: created/modified/deleted/moved_from/moved_to/close_write or watcher status.
-- watch_root, relative_path, destination: display strings; destination is the expanded
-  actual published path (including a collision suffix) when one was produced.
-- path_base64 and destination_base64: exact original path bytes. Valid UTF-8 is kept in
-  display fields; invalid bytes become U+FFFD. Newlines, quotes and controls are escaped.
-- file_size/file_mode/mtime_unix: lstat snapshot at observation/readiness/dispatch, or null
-  when unavailable. Removal events intentionally have no metadata. Original metadata is
-  retained throughout a chain, even after a move.
-- rule_name/action, config_generation, dry_run, attempt, duration_ms: execution context.
-- errno: local OS error number, 0 when inapplicable; exit_code/signal detail exec failures.
-- message: explanatory text, not a stable parser contract.
+Режим dry-run сохраняет аудит с `dry_run=true`, но результат действия имеет
+`action_result.outcome=dry_run`, а строка об успехе в TSV не создаётся. Остановка
+оператором использует результат `cancelled` вместо оповещения о сбое.
+Коды завершения программы сохраняются: 0/1/2/3.
 
-Kinds: file_observed, file_closed, event_filtered, event_coalesced, file_ready,
-rule_evaluated, action_started, action_retry, exec_status, action_result, event_finished,
-event_cancelled, event_dropped, daemon_started, daemon_stopped, config_load, config_reload,
-watcher_error, watcher_gap, runtime_error, state_error, diagnostic.
+## Версия схемы 1
 
-A successful log action is not itself a security alert. Map explicit failures/policies into
-SIEM rules. See ../integrations/README.md for Wazuh and Shuffle templates and validation limits.
+Все записи — плоские JSON-объекты. Полная машиночитаемая схема находится в
+[events.schema.json](events.schema.json). В пределах версии могут добавляться
+новые поля. Получатели должны игнорировать неизвестные поля и отклонять
+неподдерживаемые версии схемы.
+
+- `provider=fileward`, `program_version` — идентификация источника.
+- `timestamp` — время создания записи в UTC с миллисекундами. Это время наблюдения
+  или обработки, а не исходной операции ядра: inotify такую метку не предоставляет.
+- `event_id` — случайный 128-битный `run_id` и номер `sequence`. Поле `parent_id`
+  связывает записи правил, действий и готовности с исходным ID `file_observed`.
+  У записей жизненного цикла родитель может отсутствовать, то есть быть пустой строкой.
+- `host_id` — значение из `/etc/machine-id`, если доступно, иначе ID запуска;
+  `host_name` носит информационный характер.
+- `daemon_pid` — процесс-источник записи, а не пользователь или процесс, изменивший файл.
+- `kind`, `outcome`, `code` — класс записи, результат и устойчивый символьный код причины.
+- `event_type` — `created`/`modified`/`deleted`/`moved_from`/`moved_to`/`close_write`
+  либо состояние наблюдателя.
+- `watch_root`, `relative_path`, `destination` — строки для отображения. Если результат
+  опубликован, `destination` содержит фактический раскрытый путь, включая суффикс конфликта.
+- `path_base64`, `destination_base64` — точные исходные байты путей. Корректный UTF-8
+  сохраняется в полях отображения, некорректные байты заменяются на U+FFFD.
+  Переводы строк, кавычки и управляющие символы экранируются.
+- `file_size`, `file_mode`, `mtime_unix` — снимок `lstat` при наблюдении, готовности
+  или передаче на исполнение; при недоступности — `null`. Удаления намеренно не
+  содержат метаданных. Внутри цепочки сохраняется исходный снимок, даже после перемещения.
+- `rule_name`, `action`, `config_generation`, `dry_run`, `attempt`, `duration_ms` —
+  контекст исполнения.
+- `errno` — локальный номер ошибки ОС, 0, если неприменим; `exit_code` и `signal`
+  уточняют отказы команд.
+- `message` — поясняющий текст, формат которого не является устойчивым контрактом парсера.
+
+Значения `kind`: `file_observed`, `file_closed`, `event_filtered`, `event_coalesced`,
+`file_ready`, `rule_evaluated`, `action_started`, `action_retry`, `exec_status`,
+`action_result`, `event_finished`, `event_cancelled`, `event_dropped`,
+`daemon_started`, `daemon_stopped`, `config_load`, `config_reload`, `watcher_error`,
+`watcher_gap`, `runtime_error`, `state_error`, `diagnostic`.
+
+Успешное действие `log` само по себе не означает оповещение безопасности.
+Сопоставляйте явные отказы и политики с правилами SIEM. Шаблоны Wazuh и Shuffle,
+а также границы их локальной проверки описаны в [руководстве по интеграциям](../integrations/README.md).

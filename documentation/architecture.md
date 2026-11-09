@@ -1,77 +1,104 @@
-# Runtime architecture (v0.9)
+# Архитектура исполнения (v0.9)
 
-`src/app` owns CLI and daemon lifecycle. `src/watcher` owns inotify descriptors and the
-watch table. `src/core` parses immutable configurations and evaluates rules.
-`src/runtime` schedules bounded per-path event chains; `src/actions` executes one action.
-`src/observability` owns diagnostics, JSONL serialization, retention, and offline queries.
-Public interfaces live in `include/fileward`. Tests are split into unit/integration;
-SIEM templates live in `integrations`. `third_party/jsmn` is pinned MIT-licensed code used
-only to tokenize history records (commit 25647e692c7906b96ffd2b05ca54c097948e879c).
+Модуль `src/app` отвечает за интерфейс командной строки и жизненный цикл демона.
+`src/watcher` управляет дескрипторами inotify и таблицей наблюдаемых каталогов.
+`src/core` разбирает конфигурацию и проверяет правила. `src/runtime` планирует
+цепочки событий для отдельных путей в пределах ограниченной очереди, а
+`src/actions` выполняет действия. `src/observability` отвечает за диагностику,
+сериализацию в JSONL, хранение журналов и запросы к сохранённым записям.
 
-## Execution
+Публичные интерфейсы находятся в `include/fileward`. Проверки разделены на модульные
+и интеграционные; шаблоны подключения SIEM находятся в `integrations`.
+В `third_party/jsmn` закреплена версия парсера с лицензией MIT, который используется
+только для разбора записей истории: коммит `25647e692c7906b96ffd2b05ca54c097948e879c`.
 
-The observation thread receives kernel events and writes file_observed immediately,
-including filtered/coalesced events. It never executes an action. A bounded queue holds
-readiness state and a refcounted immutable config snapshot. Default capacity: 256,
-including active work. Excess events are explicitly recorded as FW_QUEUE_FULL; no
-unbounded memory growth or hidden fallback to inline execution occurs.
+## Выполнение действий
 
-Four workers by default execute independent paths concurrently. For one relative path,
-pending and active chains are serialized across configuration generations. Rules inside
-a chain retain stable descending priorities and all/first/stop semantics. Different paths
-can identify hardlinks or write the same configured destination: destination conflict
-policies still arbitrate atomically. Configured actions must account for that concurrency.
+Поток наблюдения получает события ядра и сразу записывает `file_observed`, в том
+числе для событий, которые затем будут исключены фильтрами или объединены.
+Действия выполняются рабочими потоками. Ограниченная очередь хранит состояние
+готовности файла и неизменяемый снимок конфигурации со счётчиком ссылок.
+По умолчанию в очереди может находиться 256 заданий, включая выполняемые.
+При превышении лимита записывается `FW_QUEUE_FULL`. Размер очереди не растёт
+бесконечно, а поток наблюдения не переходит к выполнению действий самостоятельно.
 
-Reload allocates/publishes a new snapshot without waiting for active actions. Existing
-pending/active jobs retain the configuration they observed; new jobs use the new generation.
-The root is pinned to its canonical absolute path; retargeting a configuration symlink cannot redirect active jobs. The resolved root directory cannot change on reload. Allocation/parse failures preserve the old
-configuration. Every structured record identifies its generation. Snapshots are freed
-when their final job completes. Queue capacity also bounds the number of retained versions.
+По умолчанию четыре рабочих потока параллельно обрабатывают независимые пути.
+Для одного относительного пути ожидающие и выполняемые цепочки сериализуются,
+в том числе между разными версиями конфигурации. Внутри цепочки сохраняются
+порядок по убыванию приоритета и семантика `all`/`first`/`stop`. Разные пути могут
+указывать на жёсткие ссылки одного файла или использовать одинаковое назначение.
+В таких случаях конфликты назначения по-прежнему разрешаются атомарно согласно
+выбранной политике. При настройке действий нужно учитывать эту параллельность.
 
-Workers inherit blocked INT/TERM/HUP. The observation thread handles these signals and
-publishes cancellation through a C11 atomic flag. Shutdown cancels pending jobs, stops
-active actions cooperatively, joins workers, writes the final event and syncs/closes the
-journal before releasing the pidfile lock. Blocking kernel/filesystem calls can still delay
-shutdown; cancellation is not an interruptible-I/O guarantee.
+При reload создаётся и публикуется новый снимок конфигурации без ожидания активных
+действий. Уже принятые задания сохраняют прежнюю конфигурацию, а новые используют
+следующую версию. Корень наблюдения закрепляется как канонический абсолютный путь:
+смена цели симлинка из конфигурации не перенаправляет активные задания. Изменить
+разрешённый корневой каталог через reload нельзя. Ошибка выделения памяти или
+разбора оставляет прежнюю конфигурацию. В каждой структурированной записи указан
+номер её версии. Снимок освобождается после завершения последнего использующего
+его задания. Ёмкость очереди также ограничивает число удерживаемых версий.
 
-Exec uses posix_spawn with a new process group, explicit default signals and empty signal
-mask, /dev/null stdin and closefrom(3). No non-async-safe child setup runs after fork in a
-multithreaded process. glibc >= 2.34 is required. Timeouts/shutdown terminate the owned group.
-Commands that deliberately escape the group are not supervised by this mechanism.
+Рабочие потоки наследуют заблокированные сигналы INT/TERM/HUP. Их обрабатывает поток
+наблюдения, передавая запрос отмены через атомарный флаг C11. При остановке ожидающие
+задания отменяются, активные действия получают запрос отмены, рабочие потоки
+завершаются и присоединяются через join. Затем записывается итоговое событие,
+синхронизируется и закрывается журнал, после чего освобождается блокировка pidfile.
+Блокирующие вызовы ядра или файловой системы могут задержать остановку: запрос
+отмены не гарантирует прерывание любой операции ввода-вывода.
 
-## Readiness
+Для `exec` используется `posix_spawn`: создаётся отдельная группа процессов,
+задаются стандартные обработчики сигналов и пустая маска, stdin направляется в
+`/dev/null`, остальные внутренние дескрипторы закрываются через `closefrom(3)`.
+Это исключает небезопасную настройку дочернего процесса после `fork` в
+многопоточной программе. Требуется glibc >= 2.34. Таймаут и остановка завершают
+принадлежащую действию группу. Процессы, намеренно покинувшие группу, этим
+механизмом не контролируются.
 
-Default `--ready-mode close-write`: regular created/modified files require IN_CLOSE_WRITE
-and a stable size/mtime/ctime for `--settle-ms` (100 ms by default). This prevents a paused
-single open writer from being mistaken for a finished download. Moved-in files may already
-be closed; they use stability, optionally accelerated by an observed close. Directories,
-symlinks, removal events and `--ready-mode immediate` bypass readiness waiting.
+## Готовность файла
 
-`--ready-mode stable` uses stability without requiring close. It is a heuristic: an open
-writer can pause longer than the window. Close-write also cannot prove that *all* writers
-are finished: one descriptor may close while another remains open. Moved-in files that
-continue to be written have the same stability caveat. For strict producer/consumer
-workflows, stage outside the watched tree, close, and atomically rename into it.
+По умолчанию используется `--ready-mode close-write`: для обычных файлов при
+`created`/`modified` требуется `IN_CLOSE_WRITE`, а также стабильность размера,
+mtime и ctime в течение `--settle-ms` — по умолчанию 100 мс. Благодаря этому пауза
+одного открытого писателя не принимается за окончание загрузки. Перенесённый
+в дерево файл может быть уже закрыт, поэтому для него используется проверка
+стабильности с учётом наблюдаемого закрытия. Каталоги, симлинки, события удаления
+и режим `--ready-mode immediate` обходят ожидание готовности.
 
-Default timeout: 300000 ms. Missing/replaced files and expired waits are coded cancellations,
-not attempted actions. Pending modifications for one path/config are coalesced; every raw
-observation is still in the journal. A recreated inode never inherits the old job's readiness.
-Rules inspect metadata once at dispatch, before the first action. Conditions such as min-age
-remain filters evaluated at that point, not scheduling timers.
+Режим `--ready-mode stable` проверяет стабильность без обязательного закрытия.
+Это эвристика: писатель может оставаться открытым и сделать паузу дольше заданного
+окна. Событие close-write также не доказывает завершение всех писателей: один
+дескриптор может закрыться, пока другой остаётся открытым. Для перенесённых файлов,
+запись в которые продолжается, действует то же ограничение проверки стабильности.
+Для строгого взаимодействия производителя и обработчика готовьте файл вне
+наблюдаемого дерева, закрывайте его и публикуйте атомарным переименованием.
 
-## Limits and failure modes
+Таймаут по умолчанию — 300000 мс. Исчезновение или замена файла и истечение
+ожидания фиксируются как отмены с кодами причин, без попытки действия.
+Ожидающие модификации одного пути и версии конфигурации объединяются, но каждое
+исходное наблюдение сохраняется в журнале. Новый inode не наследует готовность
+прежнего задания. Правила проверяют метаданные один раз при передаче на исполнение,
+до первого действия. Условия вроде `min-age` остаются фильтрами на этот момент,
+а не таймерами планировщика.
 
-inotify is not a durable message queue. Kernel overflow and watch failures are explicit;
-there is no automatic reconstruction of missed events. Losing/renaming the root exits with
-code 3. A moved-out subtree is detached, and a moved-in directory is recursively watched
-at its new location. The rewatch window is recorded; preexisting files are not replayed.
-There are at most 512 directory watches. Child watch failures are visible and can degrade
-coverage; review watcher_error records.
+## Ограничения и отказы
 
-JSONL appends are serialized under a mutex. Local append I/O can briefly delay observation;
-slow actions cannot. Use a local disk and an external collector for network delivery. There
-is no promised exactly-once processing, crash recovery, or transactional rollback across a
-chain. Killing the process can leave action_started without action_result. An audit write
-failure stops accepting/executing further work; already performed effects cannot be undone.
-The structured record is written before a new action starts. --journal-sync additionally
-requests fdatasync per record. Diagnostic stdout/stderr remains separate, including child output.
+inotify не является устойчивой очередью сообщений. Переполнение очереди ядра
+и ошибки наблюдения фиксируются явно, но пропущенные события автоматически не
+восстанавливаются. Потеря или переименование корня завершают процесс с кодом 3.
+Перенесённое наружу поддерево отсоединяется, а перенесённый внутрь каталог
+рекурсивно подписывается по новому пути. Окно переподписки отражается в журнале;
+уже существующие файлы не обрабатываются повторно. Поддерживается не более 512
+наблюдаемых каталогов. Ошибки подписки на дочерние каталоги могут уменьшить
+покрытие наблюдения; проверяйте записи `watcher_error`.
+
+Записи JSONL сериализуются под мьютексом. Локальная запись может кратковременно
+задержать наблюдение, длительные действия — нет. Используйте локальный диск и
+внешний коллектор для сетевой доставки. Обработка строго один раз, восстановление
+после сбоя и транзакционный откат всей цепочки не гарантируются. При принудительном
+завершении может остаться `action_started` без `action_result`. Отказ записи аудита
+останавливает приём и выполнение дальнейшей работы, но уже выполненные действия
+отменить невозможно. Структурированная запись создаётся перед запуском нового
+действия. Флаг `--journal-sync` дополнительно запрашивает `fdatasync` для каждой
+записи. Диагностические stdout/stderr, включая вывод дочерних процессов, остаются
+отдельным потоком.

@@ -1,23 +1,35 @@
-# Verification
+# Проверка реализации
 
-Run `make check` from the repository root. It builds the binary, runs four C suites
-(glob, parser/rules, action executor, audit failure handling), six process-level smoke
-scenarios and XML/Shuffle-adapter fixture checks. Tests use isolated temporary journals;
-they do not write to your default journal, deploy services, or contact a SIEM.
+Запустите `make check` из корня репозитория. Команда собирает программу,
+выполняет четыре набора модульных проверок на C: glob, парсер и правила,
+исполнитель действий, обработка отказов аудита. Затем запускаются шесть
+интеграционных сценариев с процессами и локальные проверки XML и адаптера Shuffle.
+Проверки используют отдельные временные журналы, не записывают данные в журнал
+пользователя по умолчанию, не развёртывают сервисы и не обращаются к SIEM.
 
-The v0.9 scenario verifies:
-- holding a writer open beyond settle time, then copying its complete content after close;
-- live observed JSON records before actions, schema field types, Unicode/control/invalid bytes;
-- event IDs, parent linkage, destination, command exit details, history and retained counters;
-- slow exec alongside another path, reload while work is active, immutable generation IDs;
-- per-path serialization and concurrent publication of 60 identical basenames by 8 workers;
-- root symlink retargeting, root watch loss and directory descriptor cleanup across 280 deletions;
-- queue saturation, readiness deadlines, cancellation and restart;
-- record rotation, malformed queries, partial-tail startup rejection and single-writer lock;
-- actual RLIMIT_FSIZE write failure followed by runtime exit 3;
-- rejection of observation feedback from journals placed inside the watched root.
+Сценарий v0.9 проверяет:
 
-ASan/UBSan and warnings-as-errors (also configured in CI):
+- удержание писателя открытым дольше интервала стабильности и копирование полного
+  содержимого после закрытия;
+- появление JSON-записи наблюдения до действий, типы полей схемы, Unicode,
+  управляющие символы и некорректные байты в именах;
+- ID событий, связи с родителем, назначения, сведения о завершении команд,
+  историю и счётчики сохранённых записей;
+- длительный `exec` одновременно с обработкой другого пути, reload во время
+  исполнения и неизменяемые номера версий конфигурации;
+- последовательность цепочек одного пути и одновременную публикацию 60 файлов
+  с одинаковыми именами восемью рабочими потоками;
+- смену цели симлинка корня, потерю корневого наблюдения и освобождение
+  дескрипторов после удаления 280 каталогов;
+- заполнение очереди, таймауты готовности, отмену и перезапуск;
+- ротацию, некорректные данные запросов, отказ запуска с незавершённым хвостом
+  и блокировку единственного писателя;
+- реальный отказ записи при `RLIMIT_FSIZE` с последующим завершением процесса кодом 3;
+- отклонение журнала внутри наблюдаемого дерева, которое создало бы обратную связь
+  из собственных событий программы.
+
+Проверка с ASan/UBSan и трактовкой предупреждений компилятора как ошибок
+также настроена в CI:
 
 ```sh
 meson setup build-asan -Db_sanitize=address,undefined -Dwerror=true
@@ -27,7 +39,8 @@ python3 tests/integration/observability-smoke.py ./build-asan/fileward
 python3 tests/integration/actions-smoke.py ./build-asan/fileward
 ```
 
-ThreadSanitizer (requires a compatible host/kernel/runtime mapping):
+Для ThreadSanitizer нужна совместимая комбинация хоста, ядра и размещения памяти
+среды исполнения:
 
 ```sh
 meson setup build-tsan -Db_sanitize=thread -Dwerror=true
@@ -35,7 +48,9 @@ meson compile -C build-tsan
 python3 tests/integration/observability-smoke.py ./build-tsan/fileward
 ```
 
-Instrumented stress tests can expose races on exercised paths; they are not a proof of
-absence of races. Wazuh decoder/rule execution, real collector rotation/reconnect behavior,
-Shuffle workflow execution/authentication and delivery deduplication require an actual
-stand. Local fixture tests do not establish that end-to-end result. See integrations/README.md.
+Нагрузочные проверки с инструментированием могут выявлять гонки на выполненных
+путях, но не доказывают отсутствие всех возможных гонок. Выполнение декодеров
+и правил Wazuh, обработка ротации и переподключений реальным коллектором,
+исполнение и аутентификация сценария Shuffle, устранение повторов доставки
+требуют действующего стенда. Локальные проверки шаблонов не подтверждают
+сквозную доставку. Подробности — в [руководстве по интеграциям](../integrations/README.md).
