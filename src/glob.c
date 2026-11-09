@@ -56,6 +56,10 @@ static int match_internal(const char *pattern, const char *text) {
     }
 
     if (*pattern == '[') {
+        if (*text == '\0' || *text == '/') {
+            return 0;
+        }
+
         int negate = 0;
         const char *pat = pattern + 1;
         if (*pat == '!') {

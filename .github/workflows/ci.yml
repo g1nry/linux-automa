@@ -19,14 +19,8 @@ jobs:
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y meson ninja-build build-essential
 
-      - name: Build and check CLI
+      - name: Build and check rules, CLI and daemon
         run: make check
-
-      - name: Check service reload
-        run: bash tests/service-smoke.sh
-
-      - name: Check daemon lifecycle
-        run: bash tests/daemon-smoke.sh
 
       - name: Check config rule matching
         shell: bash
