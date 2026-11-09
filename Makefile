@@ -2,14 +2,7 @@ PROJECT_NAME := fileward
 BUILD_DIR := build
 BINARY := $(BUILD_DIR)/$(PROJECT_NAME)
 
-USER_BIN_DIR := $(HOME)/.local/bin
-USER_SYSTEMD_DIR := $(HOME)/.config/systemd/user
-USER_SERVICE := $(USER_SYSTEMD_DIR)/$(PROJECT_NAME).service
-SERVICE_SOURCE := systemd/user/$(PROJECT_NAME).service
-USER_CONFIG_DIR := $(HOME)/.config/$(PROJECT_NAME)
-USER_CONFIG := $(USER_CONFIG_DIR)/$(PROJECT_NAME).conf
-
-.PHONY: help setup build check run clean install-user uninstall-user restart-user status-user logs-user
+.PHONY: help setup build check run clean install-user uninstall-user restart-user status-user logs-user reload-user health-user check-systemd
 
 help:
 	@echo "Available targets:"
@@ -21,6 +14,9 @@ help:
 	@echo "  make install-user   Install and start user systemd service"
 	@echo "  make uninstall-user Stop and remove user systemd service"
 	@echo "  make restart-user   Rebuild, install, and restart user service"
+	@echo "  make health-user    Query live queue, workers and observation health"
+	@echo "  make reload-user    Apply config and wait for acknowledgement"
+	@echo "  make check-systemd  Test a real temporary systemd user service"
 	@echo "  make status-user    Show user service status"
 	@echo "  make logs-user      Follow user service logs"
 
@@ -49,6 +45,8 @@ check: build
 	python3 tests/integration/actions-smoke.py ./$(BINARY)
 	python3 tests/integration/observability-smoke.py ./$(BINARY)
 	python3 tests/integration/integrations-test.py
+	python3 tests/integration/control-smoke.py ./$(BINARY)
+	python3 tests/integration/installer-test.py ./$(BINARY)
 
 run: build
 	mkdir -p $(HOME)/Downloads
@@ -58,30 +56,24 @@ clean:
 	rm -rf $(BUILD_DIR)
 
 install-user: build
-	mkdir -p $(USER_BIN_DIR)
-	mkdir -p $(USER_SYSTEMD_DIR)
-	mkdir -p $(USER_CONFIG_DIR)
-	mkdir -p $(HOME)/.local/share
-	mkdir -p $(HOME)/Downloads
-	@if [ ! -e "$(USER_CONFIG)" ]; then printf 'watch ~/Downloads\n' > "$(USER_CONFIG)"; fi
-	install -m 755 $(BINARY) $(USER_BIN_DIR)/$(PROJECT_NAME)
-	install -m 644 $(SERVICE_SOURCE) $(USER_SERVICE)
-	systemctl --user daemon-reload
-	systemctl --user enable --now $(PROJECT_NAME).service
+	python3 scripts/manage-user.py install --binary "$(abspath $(BINARY))" $(if $(CONFIG),--config "$(CONFIG)")
 
 uninstall-user:
-	-systemctl --user stop $(PROJECT_NAME).service
-	-systemctl --user disable $(PROJECT_NAME).service
-	rm -f $(USER_SERVICE)
-	rm -f $(USER_BIN_DIR)/$(PROJECT_NAME)
-	systemctl --user daemon-reload
-	-systemctl --user reset-failed $(PROJECT_NAME).service
+	python3 scripts/manage-user.py uninstall
 
 restart-user: install-user
-	systemctl --user restart $(PROJECT_NAME).service
+
+reload-user:
+	python3 scripts/manage-user.py reload
+
+health-user:
+	python3 scripts/manage-user.py health
 
 status-user:
-	systemctl --user status $(PROJECT_NAME).service --no-pager
+	systemctl --user status fileward.service --no-pager
 
 logs-user:
-	journalctl --user -u $(PROJECT_NAME).service -f
+	journalctl --user -u fileward.service -f
+
+check-systemd: build
+	python3 tests/integration/systemd-smoke.py "$(abspath $(BINARY))"

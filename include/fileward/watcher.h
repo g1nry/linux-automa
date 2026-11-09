@@ -10,6 +10,8 @@ typedef struct {
 
 int start_watcher(const char *path);
 int watcher_process_events(int timeout_ms, int (*callback)(const file_event_t *, void *), void *user_data);
+int watcher_watch_count(void);
+int watcher_degraded(void);
 void stop_watcher(void);
 
 #endif

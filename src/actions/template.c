@@ -10,23 +10,6 @@
 #include <string.h>
 #include <time.h>
 
-const char *action_type_name(action_type_t type) {
-    switch (type) {
-    case ACTION_LOG:
-        return "log";
-    case ACTION_MOVE:
-        return "move";
-    case ACTION_COPY:
-        return "copy";
-    case ACTION_ARCHIVE:
-        return "archive";
-    case ACTION_EXEC:
-        return "exec";
-    default:
-        return "unknown";
-    }
-}
-
 const char *conflict_policy_name(conflict_policy_t policy) {
     switch (policy) {
     case CONFLICT_FAIL:

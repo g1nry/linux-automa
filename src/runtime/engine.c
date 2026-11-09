@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #endif
 #include <fileward/runtime.h>
+#include <fileward/state.h>
 #include <fileward/action.h>
 #include <fileward/rules.h>
 #include <fileward/log.h>
@@ -32,7 +33,8 @@ typedef struct job {
     char id[AUDIT_ID_SIZE];
 } job_t;
 struct runtime {
-    pthread_mutex_t mutex, state_mutex;
+    pthread_mutex_t mutex;
+    state_store_t *state;
     pthread_cond_t changed;
     pthread_t threads[32];
     unsigned started, pending_count, active_count;
@@ -40,6 +42,7 @@ struct runtime {
     snapshot_t *current;
     runtime_options_t options;
     atomic_int cancel;
+    unsigned long long observed, dropped, completed, action_failures;
 };
 typedef struct {
     runtime_t *runtime;
@@ -118,27 +121,10 @@ static void state_success(runtime_t *runtime, job_t *job, const char *action) {
     if (!runtime->options.state_file || runtime->options.dry_run) {
         return;
     }
-    pthread_mutex_lock(&runtime->state_mutex);
-    FILE *file = fopen(runtime->options.state_file, "ae");
-    int error = 0;
-    if (!file) {
-        error = errno;
-    } else {
-        char timestamp[32];
-        struct tm local;
-        time_t now = time(NULL);
-        localtime_r(&now, &local);
-        strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", &local);
-        /* Legacy TSV is for compatibility; JSONL is the lossless audit source. */
-        if (fprintf(file, "%s\t%s\t%s\t%s\t%s\n", timestamp, type_name(job->event.type),
-                    job->snapshot->config.watch_path, job->event.filename, action) < 0) {
-            error = errno;
-        }
-        if (fclose(file) != 0) {
-            error = errno;
-        }
-    }
-    pthread_mutex_unlock(&runtime->state_mutex);
+    int error = state_store_append(runtime->state, job->snapshot->config.watch_path, job->event.filename,
+                                   type_name(job->event.type), action)
+                    ? errno
+                    : 0;
     if (error) {
         audit_emit("state_error", "failure", "FW_STATE_WRITE", error, strerror(error), 0, 0, NULL);
     }
@@ -190,6 +176,11 @@ static void execute_job(runtime_t *runtime, job_t *job) {
         int status = execute_action(&rule->action, config->watch_path, job->event.filename, job->event.type,
                                     runtime->options.dry_run);
         int error = status < 0 ? errno : 0;
+        if (status < 0 && error != ECANCELED) {
+            pthread_mutex_lock(&runtime->mutex);
+            runtime->action_failures++;
+            pthread_mutex_unlock(&runtime->mutex);
+        }
         audit_emit("action_result",
                    status < 0                 ? (error == ECANCELED ? "cancelled" : "failure")
                    : status == ACTION_SKIPPED ? "skipped"
@@ -270,6 +261,7 @@ static void *worker(void *argument) {
         pthread_mutex_lock(&runtime->mutex);
         runtime->active[args.slot] = NULL;
         runtime->active_count--;
+        runtime->completed++;
         finish_job(job);
         pthread_cond_broadcast(&runtime->changed);
     }
@@ -290,7 +282,13 @@ runtime_t *runtime_create(const config_t *config, const runtime_options_t *optio
         return NULL;
     }
     pthread_mutex_init(&runtime->mutex, NULL);
-    pthread_mutex_init(&runtime->state_mutex, NULL);
+    runtime->state = state_store_create(options->state_file);
+    if (!runtime->state) {
+        pthread_mutex_destroy(&runtime->mutex);
+        release(runtime->current);
+        free(runtime);
+        return NULL;
+    }
     pthread_cond_init(&runtime->changed, NULL);
     action_set_cancel_flag(&runtime->cancel);
     /* Workers inherit blocked termination signals. Only the observation thread handles them. */
@@ -327,8 +325,10 @@ int runtime_reload(runtime_t *runtime, const config_t *config) {
     if (!next) {
         return -1;
     }
+    pthread_mutex_lock(&runtime->mutex);
     snapshot_t *old = runtime->current;
     runtime->current = next;
+    pthread_mutex_unlock(&runtime->mutex);
     release(old);
     return 0;
 }
@@ -349,6 +349,9 @@ int runtime_observe(const file_event_t *event, void *data) {
         return 0;
     }
     if (event->type == EVENT_OVERFLOW || event->type == EVENT_WATCH_LOST) {
+        pthread_mutex_lock(&runtime->mutex);
+        runtime->dropped++;
+        pthread_mutex_unlock(&runtime->mutex);
         audit_emit("event_dropped", "failure",
                    event->type == EVENT_OVERFLOW ? "FW_INOTIFY_OVERFLOW" : "FW_WATCH_LOST", 0,
                    "filesystem observation is incomplete", 0, 0, NULL);
@@ -357,6 +360,9 @@ int runtime_observe(const file_event_t *event, void *data) {
     if (!*event->filename || event->type == EVENT_UNKNOWN) {
         return 0;
     }
+    pthread_mutex_lock(&runtime->mutex);
+    runtime->observed++;
+    pthread_mutex_unlock(&runtime->mutex);
     rule_input_t observed;
     prepare_rule_input(snapshot->config.watch_path, event->filename, event->type, &observed);
     audit_metadata(observed.metadata_valid ? &observed.metadata : NULL);
@@ -389,6 +395,7 @@ int runtime_observe(const file_event_t *event, void *data) {
         }
     }
     if (runtime->pending_count + runtime->active_count >= runtime->options.capacity) {
+        runtime->dropped++;
         audit_emit("event_dropped", "failure", "FW_QUEUE_FULL", 0, "bounded action queue is full", 0, 0,
                    NULL);
         pthread_mutex_unlock(&runtime->mutex);
@@ -481,6 +488,19 @@ void runtime_tick(runtime_t *runtime) {
     pthread_cond_broadcast(&runtime->changed);
     pthread_mutex_unlock(&runtime->mutex);
 }
+void runtime_status(runtime_t *runtime, runtime_status_t *status) {
+    pthread_mutex_lock(&runtime->mutex);
+    *status = (runtime_status_t){.workers = runtime->started,
+                                 .queued = runtime->pending_count,
+                                 .active = runtime->active_count,
+                                 .capacity = runtime->options.capacity,
+                                 .generation = runtime->current->generation,
+                                 .observed = runtime->observed,
+                                 .dropped = runtime->dropped,
+                                 .completed = runtime->completed,
+                                 .action_failures = runtime->action_failures};
+    pthread_mutex_unlock(&runtime->mutex);
+}
 void runtime_destroy(runtime_t *runtime) {
     atomic_store(&runtime->cancel, 1);
     pthread_mutex_lock(&runtime->mutex);
@@ -500,7 +520,7 @@ void runtime_destroy(runtime_t *runtime) {
     release(runtime->current);
     action_set_cancel_flag(NULL);
     pthread_mutex_destroy(&runtime->mutex);
-    pthread_mutex_destroy(&runtime->state_mutex);
+    state_store_destroy(runtime->state);
     pthread_cond_destroy(&runtime->changed);
     free(runtime);
 }
