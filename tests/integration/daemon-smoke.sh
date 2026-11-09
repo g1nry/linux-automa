@@ -35,7 +35,7 @@ wait_for_text() {
 
 start_daemon() (
   cd "$workdir"
-  "$binary" start --config fileward.conf --pidfile fileward.pid --log-file fileward.log --state-file fileward.state
+  "$binary" start --journal "$workdir/events.jsonl" --config fileward.conf --pidfile fileward.pid --log-file fileward.log --state-file fileward.state
 )
 
 mkdir "$workdir/watch"

@@ -53,7 +53,7 @@ elif sys.argv[1] in ("hang", "background"):
     def start(dry=False):
         global process, stream
         stream = log.open("w")
-        arguments = [binary, "run", "--config", str(config), "--state-file", str(state)]
+        arguments = [binary, "run", "--journal", str(lab / "events.jsonl"), "--config", str(config), "--state-file", str(state)]
         if dry:
             arguments.append("--dry-run")
         process = subprocess.Popen(arguments, cwd=lab, stdout=stream, stderr=stream)

@@ -10,6 +10,8 @@
 #include <fileward/rules.h>
 #include <fileward/log.h>
 #include <fileward/watcher.h>
+#include <fileward/runtime.h>
+#include <fileward/audit.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -120,6 +122,10 @@ static void print_help(const char *program_name) {
     fprintf(stderr, "  test     validate a path and show rule matches for a config\n");
     fprintf(stderr, "  validate validate config syntax without starting a watcher\n");
     fprintf(stderr, "  explain  explain which rules would match a path for an event\n");
+    fprintf(stderr, "  history  show recent action results as JSONL\n  stats    aggregate counters from the retained journal\n");
+    fprintf(stderr, "\nRuntime options: --journal <file> --journal-max-bytes <bytes> --workers 1..32\n");
+    fprintf(stderr, "  --queue-size 1..4096 --ready-mode close-write|stable|immediate\n");
+    fprintf(stderr, "  --settle-ms 0..60000 --ready-timeout-ms 100..3600000\n");
     fprintf(stderr, "\nOptions:\n");
     fprintf(stderr, "  --config <file>    load rules from a config file\n");
     fprintf(stderr, "  --dry-run          do not execute actions when running\n");
@@ -135,14 +141,6 @@ static void print_help(const char *program_name) {
     fprintf(stderr, "  %s test --config fileward.conf ~/Downloads/report.pdf\n", program_name);
     fprintf(stderr, "  %s explain --config fileward.conf --event created docs/report.pdf\n", program_name);
 }
-
-typedef struct {
-    const config_t *config;
-    int dry_run;
-    const char *state_file_path;
-    file_event_t pending_events[256];
-    size_t pending_count;
-} runtime_context_t;
 
 static int lock_pidfile(const char *pidfile_path) {
     int fd = open(pidfile_path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
@@ -345,139 +343,6 @@ static void notify_startup(int success) {
     }
 }
 
-static int append_state_event(const char *state_file_path, const char *watch_root, const char *filename, event_type_t event, const char *action_name) {
-    if (state_file_path == NULL || state_file_path[0] == '\0') {
-        return 0;
-    }
-
-    FILE *fp = fopen(state_file_path, "a");
-    if (fp == NULL) {
-        fprintf(stderr, "failed to open state file '%s': %s\n", state_file_path, strerror(errno));
-        return -1;
-    }
-
-    time_t now = time(NULL);
-    char timestamp[32];
-    struct tm *time_info = localtime(&now);
-    if (time_info != NULL) {
-        strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", time_info);
-    } else {
-        strcpy(timestamp, "unknown");
-    }
-
-    fprintf(fp, "%s\t%s\t%s\t%s\t%s\n", timestamp, event_type_to_string(event), watch_root != NULL ? watch_root : "-", filename, action_name != NULL ? action_name : "unknown");
-    fclose(fp);
-    return 0;
-}
-
-static int print_event_callback(const file_event_t *event, void *user_data) {
-    (void)user_data;
-    if (event == NULL) {
-        return -1;
-    }
-
-    printf("event: %s", event_type_to_string(event->type));
-    if (event->filename[0] != '\0') {
-        printf(" path: %s", event->filename);
-    }
-    printf("\n");
-    return 0;
-}
-
-static int dispatch_event(runtime_context_t *context, const file_event_t *event) {
-    if (context == NULL || context->config == NULL || event == NULL) {
-        return -1;
-    }
-
-    if (event->filename[0] == '\0') {
-        log_debug("ignoring event without filename");
-        return 0;
-    }
-
-    rule_result_t filter_result = evaluate_filters(context->config, event->filename);
-    if (filter_result != RULE_MATCH) {
-        log_debug("%s: %s", event->filename, rule_result_description(filter_result));
-        return 0;
-    }
-    if (context->config->rule_count == 0) {
-        print_event_callback(event, NULL);
-        return 0;
-    }
-
-    rule_input_t input;
-    prepare_rule_input(context->config->watch_path, event->filename, event->type, &input);
-    int order[FILEWARD_MAX_RULES];
-    order_rules(context->config, order);
-    int matched = 0;
-    for (int i = 0; i < context->config->rule_count; i++) {
-        const rule_t *rule = &context->config->rules[order[i]];
-        if (evaluate_rule(rule, event->type, &input) != RULE_MATCH) {
-            continue;
-        }
-
-        matched++;
-        log_info("rule '%s' (line %d) matched %s", rule->name, rule->line_no, event->filename);
-        int action_result = execute_action(&rule->action, context->config->watch_path, event->filename, event->type, context->dry_run);
-        if (action_result < 0) {
-            log_error("rule '%s': action failed for %s: %s", rule->name, event->filename, strerror(errno));
-        } else if (action_result == 0 && !context->dry_run && context->state_file_path != NULL && context->state_file_path[0] != '\0') {
-            const char *action_name = action_type_name(rule->action.type);
-            append_state_event(context->state_file_path, context->config->watch_path, event->filename, event->type, action_name);
-        }
-        if (context->config->first_match || rule->stop) {
-            break;
-        }
-    }
-
-    if (matched == 0) {
-        log_debug("no matching rules for %s", event->filename);
-    }
-
-    return 0;
-}
-
-static int flush_pending_events(runtime_context_t *context);
-
-static int queue_event(runtime_context_t *context, const file_event_t *event) {
-    if (context == NULL || event == NULL) {
-        return -1;
-    }
-
-    if (context->pending_count >= sizeof(context->pending_events) / sizeof(context->pending_events[0])) {
-        flush_pending_events(context);
-    }
-
-    context->pending_events[context->pending_count++] = *event;
-    return 0;
-}
-
-static int flush_pending_events(runtime_context_t *context) {
-    if (context == NULL) {
-        return -1;
-    }
-
-    size_t count = context->pending_count;
-    context->pending_count = 0;
-    for (size_t i = 0; i < count; i++) {
-        dispatch_event(context, &context->pending_events[i]);
-    }
-
-    return 0;
-}
-
-static int handle_file_event(const file_event_t *event, void *user_data) {
-    if (event == NULL || user_data == NULL) {
-        return -1;
-    }
-
-    runtime_context_t *context = user_data;
-    if (context->config == NULL) {
-        return -1;
-    }
-
-    return queue_event(context, event);
-}
-
 static int expand_path(const char *path, char *out, size_t out_size) {
     if (path == NULL || out == NULL || out_size == 0) {
         return -1;
@@ -666,11 +531,16 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
     const char *state_file_path = NULL;
     int dry_run = 0;
     config_t config;
-    runtime_context_t context;
+    runtime_t *runtime = NULL;
+    runtime_options_t options = {.workers=4, .capacity=256, .settle_ms=100, .ready_timeout_ms=300000};
+    char journal_default[PATH_MAX];
+    const char *journal_path = NULL;
+    int journal_sync = 0;
+    uint64_t journal_limit = 64ULL * 1024 * 1024;
     const char *watch_root = NULL;
 
     memset(&config, 0, sizeof(config));
-    memset(&context, 0, sizeof(context));
+
 
     for (int i = 0; i < argc; i++) {
         if (is_help_arg(argv[i])) {
@@ -706,6 +576,30 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
                 return EXIT_USAGE;
             }
             state_file_path = argv[++i];
+        } else if (strcmp(argv[i], "--journal-sync") == 0) {
+            journal_sync = 1;
+        } else if (strcmp(argv[i], "--journal") == 0) {
+            if (++i >= argc) return EXIT_USAGE;
+            journal_path = argv[i];
+        } else if (strcmp(argv[i], "--ready-mode") == 0) {
+            if (++i >= argc) return EXIT_USAGE;
+            if (strcmp(argv[i], "close-write") == 0) options.ready_mode = 0;
+            else if (strcmp(argv[i], "stable") == 0) options.ready_mode = 1;
+            else if (strcmp(argv[i], "immediate") == 0) options.ready_mode = 2;
+            else return EXIT_USAGE;
+        } else if (strcmp(argv[i], "--workers") == 0 || strcmp(argv[i], "--queue-size") == 0 ||
+                   strcmp(argv[i], "--settle-ms") == 0 || strcmp(argv[i], "--ready-timeout-ms") == 0 ||
+                   strcmp(argv[i], "--journal-max-bytes") == 0) {
+            const char *option = argv[i];
+            if (++i >= argc || argv[i][0] < '0' || argv[i][0] > '9') return EXIT_USAGE;
+            char *end; errno = 0;
+            unsigned long long number = strtoull(argv[i], &end, 10);
+            if (errno || *end) return EXIT_USAGE;
+            if (strcmp(option, "--workers") == 0) { if (number < 1 || number > 32) return EXIT_USAGE; options.workers = number; }
+            else if (strcmp(option, "--queue-size") == 0) { if (number < 1 || number > 4096) return EXIT_USAGE; options.capacity = number; }
+            else if (strcmp(option, "--settle-ms") == 0) { if (number > 60000) return EXIT_USAGE; options.settle_ms = number; }
+            else if (strcmp(option, "--ready-timeout-ms") == 0) { if (number < 100 || number > 3600000) return EXIT_USAGE; options.ready_timeout_ms = number; }
+            else { if (number < 4096 || number > 4294967296ULL) return EXIT_USAGE; journal_limit = number; }
         } else if (watch_path == NULL) {
             watch_path = argv[i];
         } else {
@@ -714,11 +608,35 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
         }
     }
 
+    if (options.ready_timeout_ms <= options.settle_ms) return EXIT_USAGE;
+    if (!journal_path) {
+        const char *state_home = getenv("XDG_STATE_HOME");
+        const char *home = getenv("HOME");
+        int size = state_home && *state_home ? snprintf(journal_default, sizeof(journal_default), "%s/fileward/events.jsonl", state_home) :
+                   snprintf(journal_default, sizeof(journal_default), "%s/.local/state/fileward/events.jsonl", home ? home : ".");
+        if (size < 0 || size >= (int)sizeof(journal_default)) return EXIT_USAGE;
+        journal_path = journal_default;
+    }
+    audit_set_sync(journal_sync);
+    if (audit_open(journal_path, journal_limit)) {
+        fprintf(stderr, "FW_JOURNAL_OPEN: %s: %s\n", journal_path, strerror(errno));
+        return EXIT_RUNTIME;
+    }
     if (load_watch_config(config_path, watch_path, &config, &watch_root) != 0) {
         fprintf(stderr, "Failed to load watch configuration.\n");
-        return EXIT_CONFIG;
+        audit_emit("config_load", "failure", "FW_CONFIG_INVALID", 0, "configuration rejected", 0, 0, NULL);
+        audit_close(); return EXIT_CONFIG;
     }
 
+    const char *artifacts[] = {journal_path, state_file_path, log_file_path};
+    for (unsigned i = 0; i < sizeof(artifacts)/sizeof(artifacts[0]); i++) {
+        char relative[PATH_MAX];
+        if (artifacts[i] && path_within_root(watch_root, artifacts[i], relative, sizeof(relative)) == 1) {
+            audit_emit("config_load", "failure", "FW_OUTPUT_INSIDE_WATCH", 0, "journal/log/state must be outside the watched tree", 0, 0, NULL);
+            fprintf(stderr, "FW_OUTPUT_INSIDE_WATCH: %s\n", artifacts[i]);
+            audit_close(); return EXIT_CONFIG;
+        }
+    }
     if (!daemon_mode && log_file_path != NULL && redirect_output(log_file_path) != 0) {
         fprintf(stderr, "failed to open log file '%s': %s\n", log_file_path, strerror(errno));
         return EXIT_RUNTIME;
@@ -746,52 +664,67 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
     signal(SIGHUP, handle_signal);
-    action_set_running_flag(&running);
+
 
     if (start_watcher(watch_root) != 0) {
+        audit_emit("watcher_error", "failure", "FW_WATCHER_START", errno, "watch root could not be initialized", 0, 0, NULL);
+        audit_close();
         notify_startup(0);
         release_pidfile();
         return EXIT_RUNTIME;
     }
 
+    options.dry_run = dry_run;
+    options.state_file = state_file_path;
+    runtime = runtime_create(&config, &options);
+    if (!runtime) {
+        audit_emit("runtime_error", "failure", "FW_WORKER_START", errno, "worker pool could not start", 0, 0, NULL);
+        stop_watcher(); notify_startup(0); release_pidfile(); audit_close(); return EXIT_RUNTIME;
+    }
+    audit_context(config.watch_path, "", "", 1, dry_run, NULL);
+    audit_emit("daemon_started", "success", "FW_OK", 0, "watcher and workers ready", 0, 0, NULL);
+    if (audit_failed()) {
+        runtime_destroy(runtime); stop_watcher(); notify_startup(0); audit_close(); release_pidfile(); return EXIT_RUNTIME;
+    }
     notify_startup(1);
-
     log_info("fileward started. Press Ctrl+C to stop.%s", dry_run ? " (dry-run mode)" : "");
-
-    context.config = &config;
-    context.dry_run = dry_run;
-    context.state_file_path = state_file_path;
-
+    int result = EXIT_OK;
+    unsigned generation = 1;
     while (running) {
+        if (audit_failed()) { result = EXIT_RUNTIME; break; }
         if (reload_requested && config_path != NULL) {
             reload_requested = 0;
             config_t new_config;
             const char *new_watch_root = NULL;
-            if (load_watch_config(config_path, watch_path, &new_config, &new_watch_root) != 0) {
+            audit_context(config.watch_path, "", "", generation, dry_run, NULL);
+            if (load_watch_config(config_path, watch_path, &new_config, &new_watch_root) != 0 ||
+                strcmp(new_config.watch_path, config.watch_path) != 0) {
                 log_error("failed to reload config: %s; keeping previous rules", config_path);
-                continue;
+                audit_emit("config_reload", "failure", "FW_RELOAD_REJECTED", 0, "invalid configuration or changed watch root", 0, 0, NULL);
+            } else if (runtime_reload(runtime, &new_config)) {
+                audit_emit("config_reload", "failure", "FW_MEMORY_LIMIT", ENOMEM, "keeping previous rules", 0, 0, NULL);
+            } else {
+                config = new_config; generation++;
+                audit_context(config.watch_path, "", "", generation, dry_run, NULL);
+                audit_emit("config_reload", "success", "FW_OK", 0, "new immutable configuration published", 0, 0, NULL);
+                log_info("reloaded config: %s", config_path);
             }
-            if (strcmp(new_config.watch_path, config.watch_path) != 0) {
-                log_error("config reload changed watch path; keeping previous rules until restart");
-                continue;
-            }
-            config = new_config;
-            log_info("reloaded config: %s", config_path);
         }
-
-        if (watcher_process_events(500, handle_file_event, &context) != 0) {
-            stop_watcher();
-            release_pidfile();
-            return EXIT_RUNTIME;
+        if (watcher_process_events(50, runtime_observe, runtime) != 0) {
+            audit_emit("watcher_error", "failure", "FW_WATCHER_IO", errno, "watcher stopped after an error", 0, 0, NULL);
+            result = EXIT_RUNTIME; break;
         }
-
-        flush_pending_events(&context);
+        runtime_tick(runtime);
     }
-
+    runtime_destroy(runtime);
+    audit_context(config.watch_path, "", "", generation, dry_run, NULL);
     stop_watcher();
-    release_pidfile();
+    audit_emit("daemon_stopped", result ? "failure" : "success", result ? "FW_RUNTIME_FAILED" : "FW_OK", 0, "workers joined and pending jobs cancelled", 0, 0, NULL);
     log_info("fileward stopped.");
-    return EXIT_OK;
+    audit_close();
+    if (audit_failed()) result = EXIT_RUNTIME;
+    release_pidfile();
+    return result;
 }
 
 static int stop_command(int argc, char *argv[]) {
@@ -1064,6 +997,28 @@ static int validate_command(int argc, char *argv[]) {
     return EXIT_OK;
 }
 
+static int journal_command(int argc, char **argv, int stats) {
+    char default_path[PATH_MAX];
+    const char *base = getenv("XDG_STATE_HOME");
+    int written = base && *base ? snprintf(default_path, sizeof(default_path), "%s/fileward/events.jsonl", base) :
+                  snprintf(default_path, sizeof(default_path), "%s/.local/state/fileward/events.jsonl", getenv("HOME") ? getenv("HOME") : ".");
+    if (written < 0 || written >= (int)sizeof(default_path)) return EXIT_USAGE;
+    const char *path = default_path, *id = NULL;
+    unsigned limit = 50; int all = 0;
+    for (int i=0; i<argc; i++) {
+        if (is_help_arg(argv[i])) { printf("Usage: fileward %s [--journal <file>] [--limit 1..1000] [--all] [--event-id <id>]\n", stats ? "stats" : "history"); return 0; }
+        if (strcmp(argv[i], "--journal") == 0 && i+1<argc) path = argv[++i];
+        else if (!stats && strcmp(argv[i], "--all") == 0) all = 1;
+        else if (!stats && strcmp(argv[i], "--event-id") == 0 && i+1<argc) id = argv[++i];
+        else if (!stats && strcmp(argv[i], "--limit") == 0 && i+1<argc) {
+            char *end; unsigned long n = strtoul(argv[++i], &end, 10);
+            if (*end || !n || n>1000) return EXIT_USAGE;
+            limit = n;
+        } else return EXIT_USAGE;
+    }
+    return audit_query(path, stats, all, limit, id);
+}
+
 int main(int argc, char *argv[]) {
     if (argc == 1 || is_help_arg(argv[1])) {
         print_help(argv[0]);
@@ -1071,6 +1026,7 @@ int main(int argc, char *argv[]) {
     }
 
     const char *command = argv[1];
+    if (strcmp(command, "history") == 0 || strcmp(command, "stats") == 0) return journal_command(argc-2, argv+2, strcmp(command, "stats") == 0);
     if (strcmp(command, "run") == 0) {
         return run_command(argc - 2, argv + 2, 0);
     }

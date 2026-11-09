@@ -3,6 +3,7 @@
 
 #include "config.h"
 #include <signal.h>
+#include <stdatomic.h>
 #include <stddef.h>
 
 #define FILEWARD_MAX_ARGS 32
@@ -18,6 +19,9 @@ int action_expand_template(const char *text, const char *root, const char *filen
 int action_expand_target(const char *text, const char *root, const char *filename, event_type_t event,
                          char out[PATH_MAX]);
 int action_validate_template(const char *text);
+const char *action_last_error_code(int error);
+int action_attempts(void);
+void action_set_cancel_flag(const atomic_int *flag);
 void action_set_running_flag(const volatile sig_atomic_t *flag);
 /* 0 executed, ACTION_SKIPPED on a configured conflict skip, -1 on error. */
 int execute_action(const action_t *action, const char *watch_path, const char *filename, event_type_t event,

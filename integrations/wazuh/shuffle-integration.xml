@@ -1,0 +1,8 @@
+<!-- Inside <ossec_config> on the manager. Paste the webhook URL from your deployment. -->
+<integration>
+  <name>shuffle</name>
+  <hook_url>YOUR_SHUFFLE_WEBHOOK_URL</hook_url>
+  <group>fileward</group>
+  <level>3</level>
+  <alert_format>json</alert_format>
+</integration>

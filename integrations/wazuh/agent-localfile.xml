@@ -1,0 +1,5 @@
+<!-- Inside <ossec_config> on the endpoint. Replace the absolute path. -->
+<localfile>
+  <location>/home/USER/.local/state/fileward/events.jsonl</location>
+  <log_format>json</log_format>
+</localfile>

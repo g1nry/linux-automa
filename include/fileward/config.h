@@ -15,6 +15,9 @@ typedef enum {
     EVENT_DELETED,
     EVENT_MOVED_FROM,
     EVENT_MOVED_TO,
+    EVENT_CLOSE_WRITE,
+    EVENT_OVERFLOW,
+    EVENT_WATCH_LOST,
     EVENT_UNKNOWN,
 } event_type_t;
 

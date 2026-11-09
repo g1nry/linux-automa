@@ -47,6 +47,8 @@ check: build
 	bash tests/integration/rules-smoke.sh ./$(BINARY)
 	bash tests/integration/rules-v07-smoke.sh ./$(BINARY)
 	python3 tests/integration/actions-smoke.py ./$(BINARY)
+	python3 tests/integration/observability-smoke.py ./$(BINARY)
+	python3 tests/integration/integrations-test.py
 
 run: build
 	mkdir -p $(HOME)/Downloads

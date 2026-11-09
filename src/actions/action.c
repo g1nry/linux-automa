@@ -4,6 +4,9 @@
 
 #include <fileward/action.h>
 #include <fileward/log.h>
+#include <fileward/audit.h>
+#include <spawn.h>
+#include <pthread.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -20,13 +23,19 @@
 #include <zlib.h>
 
 static const volatile sig_atomic_t *running_flag;
+static const atomic_int *cancel_flag;
+static _Thread_local const char *last_code;
+static _Thread_local int attempts;
+const char *action_last_error_code(int error) { return last_code ? last_code : audit_error_code(error); }
+int action_attempts(void) { return attempts; }
+void action_set_cancel_flag(const atomic_int *flag) { cancel_flag = flag; }
 
 void action_set_running_flag(const volatile sig_atomic_t *flag) {
     running_flag = flag;
 }
 
 static int cancelled(void) {
-    if (running_flag && !*running_flag) {
+    if (audit_failed() || (cancel_flag && atomic_load(cancel_flag)) || (running_flag && !*running_flag)) {
         errno = ECANCELED;
         return 1;
     }
@@ -161,6 +170,7 @@ static int publish(const char *source, const char *destination, conflict_policy_
         }
         unsigned flags = conflict == CONFLICT_OVERWRITE ? 0 : RENAME_NOREPLACE;
         if (renameat2(AT_FDCWD, source, AT_FDCWD, actual, flags) == 0) {
+            audit_destination(actual);
             return 0;
         }
         if (errno != EEXIST) {
@@ -404,41 +414,32 @@ static int execute_command(const action_t *action, const char *root, const char 
     if (start < 0) {
         return -1;
     }
-    struct rlimit limits;
-    if (getrlimit(RLIMIT_NOFILE, &limits) != 0) {
+    posix_spawn_file_actions_t files;
+    posix_spawnattr_t attributes;
+    int error = posix_spawn_file_actions_init(&files);
+    if (error) { errno = error; return -1; }
+    error = posix_spawnattr_init(&attributes);
+    if (error) { posix_spawn_file_actions_destroy(&files); errno = error; return -1; }
+    sigset_t empty, defaults;
+    sigemptyset(&empty); sigemptyset(&defaults);
+    sigaddset(&defaults, SIGINT); sigaddset(&defaults, SIGTERM); sigaddset(&defaults, SIGHUP); sigaddset(&defaults, SIGPIPE);
+    if (!error) error = posix_spawn_file_actions_addopen(&files, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+    if (!error) error = posix_spawn_file_actions_addclosefrom_np(&files, 3);
+    if (!error) error = posix_spawnattr_setpgroup(&attributes, 0);
+    if (!error) error = posix_spawnattr_setsigmask(&attributes, &empty);
+    if (!error) error = posix_spawnattr_setsigdefault(&attributes, &defaults);
+    if (!error) error = posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
+    pid_t child = -1;
+    extern char **environ;
+    if (!error) error = posix_spawn(&child, arguments[0], &files, &attributes, arguments, environ);
+    posix_spawn_file_actions_destroy(&files);
+    posix_spawnattr_destroy(&attributes);
+    if (error) {
+        last_code = "FW_EXEC_START";
+        audit_emit("exec_status", "failure", "FW_EXEC_START", error, "executable could not be started", 0, 0, NULL);
+        errno = error;
         return -1;
     }
-    pid_t child = fork();
-    if (child < 0) {
-        return -1;
-    }
-    if (child == 0) {
-        if (setpgid(0, 0) != 0) {
-            _exit(126);
-        }
-        signal(SIGINT, SIG_DFL);
-        signal(SIGTERM, SIG_DFL);
-        signal(SIGHUP, SIG_DFL);
-        int null = open("/dev/null", O_RDONLY);
-        if (null < 0 || dup2(null, STDIN_FILENO) < 0) {
-            _exit(126);
-        }
-        if (null > STDERR_FILENO) {
-            close(null);
-        }
-#ifdef SYS_close_range
-        if (syscall(SYS_close_range, 3U, ~0U, 0U) != 0)
-#endif
-        {
-            rlim_t bound = limits.rlim_cur == RLIM_INFINITY ? 1048576 : limits.rlim_cur;
-            for (rlim_t fd = 3; fd < bound; fd++) {
-                close((int)fd);
-            }
-        }
-        execv(arguments[0], arguments);
-        _exit(127);
-    }
-    (void)setpgid(child, child);
     int status;
     for (;;) {
         siginfo_t info;
@@ -465,6 +466,7 @@ static int execute_command(const action_t *action, const char *root, const char 
         long long now = monotonic_ms();
         if (cancelled() || now < 0 || now - start >= (long long)action->timeout_seconds * 1000) {
             int saved = cancelled() ? ECANCELED : ETIMEDOUT;
+            last_code = saved == ECANCELED ? "FW_CANCELLED" : "FW_EXEC_TIMEOUT";
             terminate_child(child);
             errno = saved;
             log_error("exec '%s' %s", arguments[0], saved == ECANCELED ? "cancelled" : "timed out");
@@ -476,11 +478,17 @@ static int execute_command(const action_t *action, const char *root, const char 
         }
     }
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        audit_exec_status(WIFEXITED(status) ? WEXITSTATUS(status) : -1, WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+        last_code = WIFSIGNALED(status) ? "FW_EXEC_SIGNAL" : "FW_EXEC_EXIT";
+        char detail[128];
+        snprintf(detail, sizeof(detail), "exit_status=%d signal=%d", WIFEXITED(status) ? WEXITSTATUS(status) : -1, WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+        audit_emit("exec_status", "failure", WIFSIGNALED(status) ? "FW_EXEC_SIGNAL" : "FW_EXEC_EXIT", 0, detail, 0, 0, NULL);
         log_error("exec '%s' failed (exit %d, signal %d)", arguments[0],
                   WIFEXITED(status) ? WEXITSTATUS(status) : -1, WIFSIGNALED(status) ? WTERMSIG(status) : 0);
         errno = ECHILD;
         return -1;
     }
+    audit_exec_status(0, 0);
     log_info("executed '%s'", arguments[0]);
     return 0;
 }
@@ -519,6 +527,7 @@ static int file_action(const action_t *action, const char *source, const char *d
 
 int execute_action(const action_t *action, const char *watch_path, const char *filename, event_type_t event,
                    int dry_run) {
+    last_code = NULL; attempts = 1;
     if (!action || !watch_path || !filename || !safe_relative(filename)) {
         errno = EINVAL;
         return -1;
@@ -566,6 +575,7 @@ int execute_action(const action_t *action, const char *watch_path, const char *f
     if (format_path(destination, sizeof(destination), directory, base) != 0) {
         return -1;
     }
+    audit_destination(destination);
     if (dry_run) {
         log_info("dry-run: would %s '%s' -> '%s' (conflict=%s)", action_type_name(action->type), source,
                  destination, conflict_policy_name(action->conflict));
@@ -574,11 +584,13 @@ int execute_action(const action_t *action, const char *watch_path, const char *f
     int result = -1;
     int delay = action->backoff_ms;
     for (int attempt = 0; attempt <= action->retries; attempt++) {
+        attempts = attempt + 1;
         result = file_action(action, source, directory, destination);
         int saved = errno;
         if (result >= 0 || !transient_error(saved) || attempt == action->retries || cancelled()) {
             break;
         }
+        audit_emit("action_retry", "retry", audit_error_code(saved), saved, strerror(saved), attempt + 1, 0, NULL);
         log_warn("%s failed for '%s': %s; retry %d/%d in %dms", action_type_name(action->type), source,
                  strerror(saved), attempt + 1, action->retries, delay);
         if (pause_ms(delay) != 0) {

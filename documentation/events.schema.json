@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:fileward:events:1",
+  "title": "Fileward event schema v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "provider",
+    "program_version",
+    "timestamp",
+    "event_id",
+    "run_id",
+    "parent_id",
+    "host_id",
+    "host_name",
+    "kind",
+    "outcome",
+    "code",
+    "event_type",
+    "watch_root",
+    "relative_path",
+    "path_base64",
+    "destination",
+    "destination_base64",
+    "rule_name",
+    "action",
+    "message",
+    "sequence",
+    "daemon_pid",
+    "errno",
+    "attempt",
+    "duration_ms",
+    "config_generation",
+    "signal",
+    "exit_code",
+    "file_size",
+    "file_mode",
+    "mtime_unix",
+    "dry_run"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "provider": {
+      "const": "fileward"
+    },
+    "program_version": {
+      "type": "string"
+    },
+    "timestamp": {
+      "type": "string"
+    },
+    "event_id": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "parent_id": {
+      "type": "string"
+    },
+    "host_id": {
+      "type": "string"
+    },
+    "host_name": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "outcome": {
+      "type": "string"
+    },
+    "code": {
+      "type": "string"
+    },
+    "event_type": {
+      "type": "string"
+    },
+    "watch_root": {
+      "type": "string"
+    },
+    "relative_path": {
+      "type": "string"
+    },
+    "path_base64": {
+      "type": "string"
+    },
+    "destination": {
+      "type": "string"
+    },
+    "destination_base64": {
+      "type": "string"
+    },
+    "rule_name": {
+      "type": "string"
+    },
+    "action": {
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "daemon_pid": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "errno": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "config_generation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "signal": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "exit_code": {
+      "type": "integer",
+      "minimum": -1
+    },
+    "file_size": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "file_mode": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "mtime_unix": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "dry_run": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": true
+}

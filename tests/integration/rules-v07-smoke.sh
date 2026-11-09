@@ -31,7 +31,7 @@ stop_process() {
 }
 start_process() {
   : > "$workdir/run.log"
-  "$binary" run --config "$workdir/rules.conf" --log-file "$workdir/run.log" --state-file "$workdir/state" "$@" &
+  "$binary" run --journal "$workdir/events.jsonl" --config "$workdir/rules.conf" --log-file "$workdir/run.log" --state-file "$workdir/state" "$@" &
   pid=$!
   wait_for_log 'fileward started'
 }
