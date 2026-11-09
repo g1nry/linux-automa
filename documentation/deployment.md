@@ -147,17 +147,82 @@ systemd принудительно завершает всю группу слу
 Legacy `reload --pidfile /path/fileward.pid` и SIGHUP сохраняются, но не ждут
 подтверждения применения. Для сервиса используйте управляющий сокет или systemctl.
 
+## Фоновый запуск без systemd
+
+Для отдельного процесса из дерева проекта можно использовать `start` и pidfile.
+Подготовьте входящие каталоги и отдельные пути аудита и управления, чтобы экземпляр
+не конфликтовал с установленным сервисом:
+
+```sh
+make build
+mkdir -p ~/Downloads/FilewardLab/{inbox,staging} "$HOME/.local/state/fileward"
+manual_runtime=$(mktemp -d /tmp/fileward-manual.XXXXXX)
+./build/fileward start --config example.conf \
+  --pidfile "$HOME/.local/state/fileward/manual.pid" \
+  --log-file "$HOME/.local/state/fileward/manual.log" \
+  --state-file "$HOME/.local/state/fileward/manual.state" \
+  --journal "$HOME/.local/state/fileward/manual-events.jsonl" \
+  --control-socket "$manual_runtime/control.sock"
+```
+
+Выполняйте команды управления ниже в той же оболочке, где задан `manual_runtime`.
+Для управления из другой сессии укажите получившийся путь сокета явно.
+Для остановки по pidfile переменная не требуется.
+
+```sh
+./build/fileward status --pidfile "$HOME/.local/state/fileward/manual.pid"
+./build/fileward health --socket "$manual_runtime/control.sock"
+./build/fileward reload --socket "$manual_runtime/control.sock"
+tail -f "$HOME/.local/state/fileward/manual.log"
+./build/fileward stop --pidfile "$HOME/.local/state/fileward/manual.pid"
+```
+
+`Ctrl+C` завершает просмотр `tail -f`, а `stop` — сам демон с ожиданием до 5 секунд.
+По умолчанию команды pidfile используют `/tmp/fileward.pid`; явный путь разделяет
+экземпляры. Pidfile остаётся после остановки, состояние определяет его блокировка.
+Не удаляйте файл работающего процесса. Повторный `start` с тем же pidfile отклоняется.
+Без `--log-file` отсоединённый процесс направляет stdout/stderr в `/dev/null`.
+`reload --pidfile` также поддерживается, но отправляет SIGHUP без подтверждения.
+
+TSV-файл `--state-file` создаётся после первого успешного действия и содержит
+`время<TAB>событие<TAB>watch<TAB>относительный путь<TAB>действие`. Dry-run,
+пропуски и ошибки действий не добавляют туда успех. Это совместимый журнал,
+а не сохранённая очередь для восстановления. Основной структурированный аудит — JSONL.
+
 ## Системная служба
 
 Шаблон `systemd/system/fileward@.service` рассчитан на бинарь `/usr/local/bin/fileward`
 и `/etc/fileward/<user>.conf`. Процесс работает как пользователь `%i`, manager
 создаёт `/run/fileward-<user>` с режимом 0700. Заранее создайте
-`/var/log/fileward/<user>` с владельцем сервиса. Команды установки приведены в
-[README](../README.md). User-service и system-service для одного дерева одновременно
-не запускайте. Проверка системного экземпляра:
+`/var/log/fileward/<user>` с владельцем сервиса.
+
+User-service и system-service для одного дерева одновременно не запускайте.
+Если пользовательская служба уже установлена, перед переходом остановите её:
+`systemctl --user disable --now fileward.service`.
+
+Пример системной установки для текущего пользователя из корня репозитория:
+
+```sh
+make build
+mkdir -p ~/Downloads/Fileward/inbox
+meson configure build --prefix=/usr/local --bindir=bin
+sudo meson install -C build
+sudo install -m 644 systemd/system/fileward@.service /etc/systemd/system/
+sudo install -d -m 755 /etc/fileward
+sudo install -d -m 700 -o "$USER" "/var/log/fileward/$USER"
+if ! sudo test -e "/etc/fileward/$USER.conf"; then
+  printf 'watch %s/Downloads/Fileward/inbox\nwhen created ** log "Входящий файл"\n' "$HOME" | sudo tee "/etc/fileward/$USER.conf" >/dev/null
+fi
+sudo systemctl daemon-reload
+sudo systemctl enable --now "fileward@$USER.service"
+```
+
+Проверка и управление:
 
 ```sh
 sudo systemctl status "fileward@$USER.service"
 /usr/local/bin/fileward health --socket "/run/fileward-$USER/control.sock"
 sudo systemctl reload "fileward@$USER.service"
+sudo journalctl -u "fileward@$USER.service" -f
+sudo systemctl disable --now "fileward@$USER.service"
 ```
