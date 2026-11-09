@@ -42,11 +42,13 @@ check: build
 		exit 1; \
 	fi
 	meson test -C $(BUILD_DIR) --print-errorlogs
-	bash tests/service-smoke.sh ./$(BINARY)
-	bash tests/daemon-smoke.sh ./$(BINARY)
-	bash tests/rules-smoke.sh ./$(BINARY)
-	bash tests/rules-v07-smoke.sh ./$(BINARY)
-	python3 tests/actions-smoke.py ./$(BINARY)
+	bash tests/integration/service-smoke.sh ./$(BINARY)
+	bash tests/integration/daemon-smoke.sh ./$(BINARY)
+	bash tests/integration/rules-smoke.sh ./$(BINARY)
+	bash tests/integration/rules-v07-smoke.sh ./$(BINARY)
+	python3 tests/integration/actions-smoke.py ./$(BINARY)
+	python3 tests/integration/observability-smoke.py ./$(BINARY)
+	python3 tests/integration/integrations-test.py
 
 run: build
 	mkdir -p $(HOME)/Downloads

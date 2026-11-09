@@ -1,4 +1,9 @@
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include <fileward/log.h>
+#include <fileward/audit.h>
+#include <errno.h>
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -13,17 +18,20 @@ void log_init(const char *program_name) {
 }
 
 static void log_message(const char *level, const char *format, va_list args) {
+    int saved = errno;
+    char message[4096];
+    vsnprintf(message, sizeof(message), format, args);
     time_t now = time(NULL);
-    struct tm *time_info = localtime(&now);
+    struct tm time_info;
     char timestamp[32] = "unknown-time";
-
-    if (time_info != NULL) {
-        strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", time_info);
+    if (localtime_r(&now, &time_info)) {
+        strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", &time_info);
     }
-
-    fprintf(stderr, "[%s] %s: %s: ", timestamp, app_name, level);
-    vfprintf(stderr, format, args);
-    fprintf(stderr, "\n");
+    flockfile(stderr);
+    fprintf(stderr, "[%s] %s: %s: %s\n", timestamp, app_name, level, message);
+    funlockfile(stderr);
+    audit_diagnostic(level, message);
+    errno = saved;
 }
 
 void log_info(const char *format, ...) {

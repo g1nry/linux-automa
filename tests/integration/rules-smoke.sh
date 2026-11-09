@@ -65,7 +65,7 @@ for command in test explain; do
 done
 
 : > "$workdir/run.log"
-"$binary" run --config "$config" --log-file "$workdir/run.log" > "$workdir/launcher.log" 2>&1 &
+"$binary" run --journal "$workdir/events.jsonl" --config "$config" --log-file "$workdir/run.log" > "$workdir/launcher.log" 2>&1 &
 pid=$!
 wait_for_log 'fileward started'
 touch "$workdir/watch/first.txt"

@@ -4,6 +4,7 @@
 
 #include <fileward/watcher.h>
 #include <fileward/log.h>
+#include <fileward/audit.h>
 
 #include <dirent.h>
 #include <errno.h>
@@ -31,6 +32,9 @@ static watch_entry_t watch_entries[MAX_WATCHES];
 static int watch_count = 0;
 
 static event_type_t event_type_from_mask(uint32_t mask) {
+    if (mask & IN_Q_OVERFLOW) return EVENT_OVERFLOW;
+    if (mask & (IN_DELETE_SELF | IN_MOVE_SELF | IN_UNMOUNT)) return EVENT_WATCH_LOST;
+    if (mask & IN_CLOSE_WRITE) return EVENT_CLOSE_WRITE;
     if (mask & IN_CREATE) {
         return EVENT_CREATED;
     }
@@ -55,7 +59,11 @@ static event_type_t event_type_from_mask(uint32_t mask) {
 }
 
 static int add_watch_entry(int wd, const char *path) {
+    for (int i = 0; i < watch_count; i++) {
+        if (watch_entries[i].wd == wd) { snprintf(watch_entries[i].path, sizeof(watch_entries[i].path), "%s", path); return 0; }
+    }
     if (watch_count >= MAX_WATCHES) {
+        audit_emit("watcher_error", "failure", "FW_WATCH_LIMIT", ENOSPC, "directory watch limit reached", 0, 0, NULL);
         log_error("too many watched directories");
         return -1;
     }
@@ -90,10 +98,11 @@ static int add_directory_watch(const char *path) {
     int wd = inotify_add_watch(
         inotify_fd,
         path,
-        IN_CREATE | IN_MODIFY | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_ONLYDIR
+        IN_CREATE | IN_MODIFY | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_CLOSE_WRITE | IN_DELETE_SELF | IN_MOVE_SELF | IN_UNMOUNT | IN_ONLYDIR
     );
 
     if (wd == -1) {
+        audit_emit("watcher_error", "failure", "FW_WATCH_ADD", errno, path, 0, 0, NULL);
         log_warn("cannot watch directory '%s': %s", path, strerror(errno));
         return -1;
     }
@@ -145,7 +154,7 @@ static int add_recursive_watches(const char *path) {
             add_recursive_watches(child_path);
         } else if (entry->d_type == DT_UNKNOWN) {
             struct stat child_st;
-            if (stat(child_path, &child_st) == 0 && S_ISDIR(child_st.st_mode)) {
+            if (lstat(child_path, &child_st) == 0 && S_ISDIR(child_st.st_mode)) {
                 add_recursive_watches(child_path);
             }
         }
@@ -202,7 +211,7 @@ int start_watcher(const char *path) {
         watched_path[len - 1] = '\0';
     }
 
-    inotify_fd = inotify_init();
+    inotify_fd = inotify_init1(IN_CLOEXEC);
     if (inotify_fd == -1) {
         log_error("inotify_init failed: %s", strerror(errno));
         return -1;
@@ -220,7 +229,7 @@ int start_watcher(const char *path) {
 }
 
 int watcher_process_events(int timeout_ms, int (*callback)(const file_event_t *, void *), void *user_data) {
-    char buffer[EVENT_BUF_LEN];
+    _Alignas(struct inotify_event) char buffer[EVENT_BUF_LEN];
     struct pollfd poll_fd;
     ssize_t bytes_read;
     size_t offset = 0;
@@ -264,19 +273,44 @@ int watcher_process_events(int timeout_ms, int (*callback)(const file_event_t *,
 
         file_event.type = event_type_from_mask(event->mask);
         file_event.filename[0] = '\0';
+        if (file_event.type == EVENT_WATCH_LOST) {
+            const char *base = watch_path_for_wd(event->wd);
+            if (!base || strcmp(base, watched_path) != 0) file_event.type = EVENT_UNKNOWN;
+        }
 
         if (event->len > 0 && event->name[0] != '\0') {
             if (build_relative_path(event->wd, event->name, file_event.filename, sizeof(file_event.filename)) != 0) {
                 file_event.filename[0] = '\0';
+        if (file_event.type == EVENT_WATCH_LOST) {
+            const char *base = watch_path_for_wd(event->wd);
+            if (!base || strcmp(base, watched_path) != 0) file_event.type = EVENT_UNKNOWN;
+        }
             }
         }
 
-        if (file_event.filename[0] == '\0' && !(event->mask & IN_CREATE) && !(event->mask & IN_MOVED_TO) && !(event->mask & IN_DELETE) && !(event->mask & IN_MOVED_FROM) && !(event->mask & IN_MODIFY)) {
+        /* IN_IGNORED has no filename: retire it before the empty-event fast path. */
+        if (event->mask & IN_IGNORED) remove_watch_entry(event->wd);
+
+        if (file_event.type != EVENT_OVERFLOW && file_event.type != EVENT_WATCH_LOST && file_event.filename[0] == '\0' && !(event->mask & IN_CREATE) && !(event->mask & IN_MOVED_TO) && !(event->mask & IN_DELETE) && !(event->mask & IN_MOVED_FROM) && !(event->mask & IN_MODIFY)) {
             offset += EVENT_SIZE + event->len;
             continue;
         }
 
         if (event->mask & IN_ISDIR) {
+            if ((event->mask & IN_MOVED_FROM) && file_event.filename[0]) {
+                char old[PATH_MAX];
+                int length = snprintf(old, sizeof(old), "%s/%s", watched_path, file_event.filename);
+                if (length >= 0 && (size_t)length < sizeof(old)) {
+                    for (int i = watch_count - 1; i >= 0; i--) {
+                        if (strncmp(watch_entries[i].path, old, (size_t)length) == 0 &&
+                            (watch_entries[i].path[length] == '/' || !watch_entries[i].path[length])) {
+                            int wd = watch_entries[i].wd;
+                            inotify_rm_watch(inotify_fd, wd); remove_watch_entry(wd);
+                        }
+                    }
+                }
+                audit_emit("watcher_gap", "warning", "FW_DIRECTORY_REWATCH", 0, "subtree detached; moved-in directories are watched at their new path", 0, 0, NULL);
+            }
             if ((event->mask & IN_CREATE) || (event->mask & IN_MOVED_TO)) {
                 const char *base = watch_path_for_wd(event->wd);
                 if (base != NULL && event->len > 0 && event->name[0] != '\0') {
@@ -298,7 +332,7 @@ int watcher_process_events(int timeout_ms, int (*callback)(const file_event_t *,
         }
 
         if (callback != NULL) {
-            callback(&file_event, user_data);
+            if (callback(&file_event, user_data) != 0) return -1;
         }
 
         offset += EVENT_SIZE + event->len;

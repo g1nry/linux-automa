@@ -1,0 +1,31 @@
+<group name="fileward,">
+  <rule id="100800" level="0">
+    <decoded_as>json</decoded_as>
+    <field name="provider">^fileward$</field>
+    <field name="schema_version">^1$</field>
+    <description>Fileward structured event</description>
+  </rule>
+  <rule id="100801" level="5">
+    <if_sid>100800</if_sid>
+    <field name="kind">^action_result$</field>
+    <field name="outcome">^failure$</field>
+    <description>Fileward action $(action) failed: $(code), path $(relative_path)</description>
+  </rule>
+  <rule id="100802" level="7">
+    <if_sid>100800</if_sid>
+    <field name="kind">^event_dropped$</field>
+    <description>Fileward observation/queue loss: $(code)</description>
+  </rule>
+  <rule id="100803" level="5">
+    <if_sid>100800</if_sid>
+    <field name="kind">^event_cancelled$</field>
+    <field name="outcome">^failure$</field>
+    <description>Fileward readiness failure: $(code)</description>
+  </rule>
+  <rule id="100804" level="5">
+    <if_sid>100800</if_sid>
+    <field name="kind" type="pcre2">^(config_reload|watcher_error|runtime_error|state_error|config_load)$</field>
+    <field name="outcome">^failure$</field>
+    <description>Fileward runtime/configuration failure: $(code)</description>
+  </rule>
+</group>
