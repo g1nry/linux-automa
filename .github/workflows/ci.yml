@@ -40,3 +40,18 @@ jobs:
             fi
             grep -q 'outside watch root' <<< "$output"
           done
+
+  sanitizers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y meson ninja-build build-essential zlib1g-dev pkg-config python3
+      - name: Build with ASan, UBSan and warnings as errors
+        run: |
+          meson setup build-asan -Db_sanitize=address,undefined -Dwerror=true
+          meson compile -C build-asan
+          meson test -C build-asan --print-errorlogs
+      - name: Check concurrency, readiness and audit under sanitizers
+        run: python3 tests/integration/observability-smoke.py ./build-asan/fileward
