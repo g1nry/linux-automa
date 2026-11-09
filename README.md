@@ -4,7 +4,7 @@ Fileward — лёгкий локальный демон автоматизаци
 
 Он следит за событиями файловой системы, проверяет их по правилам и выполняет действия `log`, `move`, `copy`, `archive` и `exec`. Поддерживаются условия, приоритеты, фильтры, политики конфликтов и шаблоны путей назначения.
 
-Проект начинается как небольшой watcher на базе `inotify`, но дальше должен вырасти в локальный event-driven automation daemon.
+Версия 1.0 объединяет наблюдение через `inotify`, ограниченный планировщик, модульные обработчики действий и структурированный аудит. Сервис работает без сетевого сервера и внешней базы данных.
 
 ## Структура проекта
 
@@ -42,22 +42,41 @@ ZIP появился в ~/Downloads       -> переместить в ~/Archive
 TXT появился в ~/Downloads       -> записать сообщение в лог
 ```
 
+## Быстрый запуск за три команды
+
+Из корня клонированного репозитория на Debian/Ubuntu с работающим пользовательским systemd:
+
+```bash
+sudo apt-get install -y build-essential meson ninja-build pkg-config zlib1g-dev python3
+make install-user
+make health-user
+```
+
+`make install-user` собирает программу, устанавливает её и запускает сервис без `sudo`.
+При первой установке создаётся `~/Downloads/Fileward/inbox` и правило, которое только
+журналирует новые файлы. Проверьте работу командой `touch ~/Downloads/Fileward/inbox/hello.txt`
+и посмотрите журнал: `make logs-user`. Если зависимости уже установлены, нужны только
+последние две команды.
+
+Правила сервиса хранятся в `~/.config/fileward/fileward.conf`; отредактируйте их и
+выполните `make reload-user`. Установщик сохраняет существующую конфигурацию.
+Чтобы при первой установке использовать свою локальную конфигурацию, выполните
+`make install-user CONFIG=fileward.conf`. [Подробности установки и управления](documentation/deployment.md).
+
 ## Текущий статус
 
-Текущая версия — `v0.9.0`, ветка `v0.9-observability`. Добавлены JSONL-журнал с версией схемы, коды ошибок, история и статистика, ограниченный пул потоков для действий, ожидание готовности файлов и шаблоны интеграций Wazuh → Shuffle. Сохранены правила и действия v0.6–v0.8.
+Текущая версия — `v1.0.0`, ветка `v1.0-engine`. Все пункты roadmap v1.0 реализованы:
 
-Текущий фокус:
+- watcher, планировщик, обработчики и хранилище состояния имеют отдельные интерфейсы;
+- парсер и исполнитель используют общий реестр модульных обработчиков;
+- `health` возвращает живое состояние очереди, потоков, наблюдения и аудита в JSON;
+- `reload` подтверждает применение конфигурации и сохраняет прежние правила при ошибке;
+- user/system services используют уведомление готовности, watchdog и восстановление после сбоя;
+- установка и обновление выполняются одной командой с сохранением конфигурации и журналов.
 
-- рекурсивное наблюдение через `inotify`;
-- действия `log`, `move`, `copy`, `archive`, `exec` с условиями, приоритетами и фильтрами;
-- foreground и daemon-запуск, `dry-run` и журнал обработанных действий;
-- `start`, `stop`, `status`, `reload` и защита от двух процессов с одним pidfile;
-- обработка событий через очередь в основном цикле;
-- user/system `systemd` units и перезагрузка правил через `SIGHUP`.
-
-Ближайшие следующие шаги:
-
-- развивать модульную архитектуру и восстановление после сбоев в `v1.0` согласно roadmap ниже.
+Сохраняются правила и действия v0.6–v0.8, JSONL, параллельное исполнение,
+ожидание готовности файлов и шаблоны интеграций v0.9. Восстановление процесса
+через systemd не переигрывает пропущенные события или незавершённые задания.
 
 ## Сборка
 
@@ -196,7 +215,7 @@ make build
 make check
 ```
 
-`make check` собирает проект, проверяет CLI, запускает unit-тесты парсера, правил, glob, действий и отказов аудита; шесть smoke-сценариев и локальную проверку интеграционных шаблонов. Unit-тесты отдельно: `meson test -C build --print-errorlogs`.
+`make check` собирает проект, проверяет CLI, запускает unit-тесты парсера, правил, glob, действий, состояния и отказов аудита; сценарии исполнения, управления, установки и локальную проверку интеграционных шаблонов. Unit-тесты отдельно: `meson test -C build --print-errorlogs`.
 
 Проверки reload, log-file, блокировки pidfile, start/stop и state-file:
 
@@ -210,7 +229,7 @@ python3 tests/integration/observability-smoke.py
 python3 tests/integration/integrations-test.py
 ```
 
-Эти проверки также запускаются в GitHub Actions на Ubuntu при push и pull request. Они проверяют сам процесс; установку и запуск unit-файлов под systemd нужно проверять отдельно.
+Эти проверки также запускаются в GitHub Actions на Ubuntu при push и pull request. Для проверки настоящего systemd на машине с пользовательским manager выполните `make check-systemd`. Используется отдельный временный сервис; сценарий проверяет reload, восстановление после SIGKILL и срабатывание watchdog. Подробнее: [проверки](documentation/testing.md).
 
 Установить бинарь и user-service:
 
@@ -242,9 +261,24 @@ make logs-user
 make uninstall-user
 ```
 
-`install-user` ставит бинарь в `~/.local/bin/fileward`, service-файл в `~/.config/systemd/user/fileward.service`, создаёт `~/.config/fileward/fileward.conf` с `watch ~/Downloads` (если файла ещё нет) и запускает сервис через `systemctl --user`. Логи сервиса доступны через `make logs-user`.
+`install-user` ставит бинарь в `~/.local/bin/fileward`, unit — в
+`~/.config/systemd/user/fileward.service`, конфигурацию — в
+`~/.config/fileward/fileward.conf`. Учитываются `XDG_CONFIG_HOME`, `XDG_STATE_HOME`
+и `XDG_RUNTIME_DIR`. JSONL по умолчанию находится в `~/.local/state/fileward/events.jsonl`.
+Начальный конфиг только журналирует файлы в отдельном входящем каталоге.
 
-Запускайте `make install-user` без `sudo`. Начальный конфиг не содержит действий — добавьте свои правила. Журнал успешных действий хранится в `~/.local/share/fileward.state`; `make uninstall-user` оставляет конфиг и журнал. После обновления уже установленного сервиса используйте `make restart-user`.
+Запускайте установку без `sudo`. Повторный `make install-user` или `make restart-user`
+проверяет конфиг, атомарно заменяет бинарь и unit и перезапускает службу.
+`make uninstall-user` сохраняет конфигурацию и журналы.
+
+```bash
+make health-user
+make reload-user
+```
+
+Health возвращает код 0 для healthy, 4 для degraded и 3 при недоступности процесса.
+Reload возвращает успех после применения нового снимка правил. При отклонении
+конфигурации команда завершается кодом 2, а сервис продолжает работать со старой.
 
 Остановить и снова запустить user-service:
 
@@ -269,6 +303,7 @@ meson configure build --prefix=/usr/local --bindir=bin
 sudo meson install -C build
 sudo install -m 644 systemd/system/fileward@.service /etc/systemd/system/
 sudo install -d -m 755 /etc/fileward
+sudo install -d -m 700 -o "$USER" "/var/log/fileward/$USER"
 if ! sudo test -e "/etc/fileward/$USER.conf"; then
   printf 'watch %s/Downloads\n' "$HOME" | sudo tee "/etc/fileward/$USER.conf" >/dev/null
 fi
@@ -295,7 +330,7 @@ sudo systemctl disable --now "fileward@$USER.service"
 Для быстрой проверки компиляции:
 
 ```bash
-cc -std=c11 -Wall -Wextra -Isrc -Iinclude src/app/main.c src/app/daemon.c src/watcher/inotify.c src/observability/log.c src/observability/audit.c src/observability/query.c src/runtime/engine.c src/core/config.c src/actions/action.c src/actions/template.c src/core/glob.c src/core/rules.c -pthread -lz -o /tmp/fileward
+cc -std=c11 -Wall -Wextra -Iinclude src/app/*.c src/watcher/*.c src/observability/*.c src/runtime/*.c src/core/*.c src/actions/*.c -pthread -lz -o /tmp/fileward
 ```
 
 Запуск:
@@ -570,7 +605,7 @@ rule inspect timeout=10s type=file when moved_to ** exec /usr/bin/stat -- "{path
 
 JSONL пишется сразу после получения события и при изменении состояния задания: наблюдение → готовность → проверка правила → начало/результат действия. У записи есть уникальный ID; дочерние записи ссылаются на исходное наблюдение. Поля включают хост, версию конфигурации, путь и его исходные байты Base64, метаданные, назначение, тип результата, код ошибки, errno, exit_code/signal и длительность. Текстовый лог остаётся для человека; для SIEM используйте JSONL.
 
-По умолчанию журнал находится в `$XDG_STATE_HOME/fileward/events.jsonl` либо `~/.local/state/fileward/events.jsonl`. Нескольким экземплярам нужны разные журналы. `--journal-max-bytes` задаёт размер сегмента (64 MiB по умолчанию, сохраняются ещё .1/.2/.3). `--journal-sync` добавляет fdatasync на запись. Журнал, лог и state-file должны находиться вне watch; нарушение отклоняется при запуске.
+По умолчанию журнал находится в `$XDG_STATE_HOME/fileward/events.jsonl` либо `~/.local/state/fileward/events.jsonl`. Нескольким экземплярам нужны разные журналы. `--journal-max-bytes` задаёт размер сегмента (64 MiB по умолчанию, сохраняются ещё .1/.2/.3). `--journal-sync` добавляет fdatasync на запись. Журнал, лог, state-file и управляющий сокет должны находиться вне watch; нарушение отклоняется при запуске.
 
 `--workers 1..32` (по умолчанию 4) и `--queue-size 1..4096` (256) управляют пулом. Разные пути обрабатываются параллельно; все правила и события одного пути сериализуются. При reload уже принятые задания сохраняют старую версию правил, новые получают следующую. Переполнение очереди не скрывается: записывается `FW_QUEUE_FULL`.
 
@@ -629,12 +664,18 @@ JSONL пишется сразу после получения события и 
 - ожидание close_write/стабильности, таймаут готовности, объединение модификаций;
 - разделение исходников и тестов по модулям.
 
-### v1.0 — движок локальной автоматизации
+### v1.0 — движок локальной автоматизации (готово)
 
-- сделать архитектуру расширяемой: watcher, dispatcher, executor, state;
-- поддержать plugin-like или modular action handlers;
-- сделать проект удобным для повседневного использования как локальный automation daemon;
-- обеспечить стабильный запуск через `systemd`, с reload, health-check и понятной документацией.
+- отдельные интерфейсы watcher, планировщика, исполнителя и состояния;
+- модульные обработчики действий с единым реестром возможностей;
+- живой health в JSON и ограниченный локальный управляющий сокет;
+- подтверждаемый reload с сохранением предыдущих правил при ошибке;
+- запуск через systemd с readiness, watchdog, ограничением рестартов и завершением дочерних процессов;
+- установка/обновление одной командой, сохранение конфига и журналов, русская документация;
+- проверки управляющего протокола, установщика и настоящего systemd.
+
+Интерфейсы расширения описаны в [руководстве разработчика](documentation/extensions.md),
+эксплуатация — в [руководстве по развёртыванию](documentation/deployment.md).
 
 ## Лицензия
 
