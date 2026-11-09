@@ -96,16 +96,8 @@ static event_type_t parse_event_type(const char *token) {
 }
 
 static action_type_t parse_action_type(const char *token) {
-    if (strcmp(token, "log") == 0) {
-        return ACTION_LOG;
-    }
-    if (strcmp(token, "move") == 0) {
-        return ACTION_MOVE;
-    }
-    if (strcmp(token, "copy") == 0) return ACTION_COPY;
-    if (strcmp(token, "archive") == 0) return ACTION_ARCHIVE;
-    if (strcmp(token, "exec") == 0) return ACTION_EXEC;
-    return ACTION_UNKNOWN;
+    const action_handler_t *handler = action_handler_named(token);
+    return handler ? handler->type : ACTION_UNKNOWN;
 }
 
 static int read_optional_message(char **text, char *buffer, size_t buffer_size) {
@@ -158,26 +150,44 @@ static int valid_rule_name(const char *name) {
 
 /* Integer quantities only; cap at INT64_MAX so stat/time comparisons stay meaningful. */
 static int parse_quantity(const char *text, int age, uint64_t *value) {
-    if (!isdigit((unsigned char)*text)) return -1;
+    if (!isdigit((unsigned char)*text)) {
+        return -1;
+    }
     errno = 0;
     char *end;
     unsigned long long number = strtoull(text, &end, 10);
-    if (errno != 0) return -1;
+    if (errno != 0) {
+        return -1;
+    }
     uint64_t multiplier = 1;
     if (age) {
-        if (*end == '\0' || strcmp(end, "s") == 0) multiplier = 1;
-        else if (strcmp(end, "m") == 0) multiplier = 60;
-        else if (strcmp(end, "h") == 0) multiplier = 3600;
-        else if (strcmp(end, "d") == 0) multiplier = 86400;
-        else return -1;
+        if (*end == '\0' || strcmp(end, "s") == 0) {
+            multiplier = 1;
+        } else if (strcmp(end, "m") == 0) {
+            multiplier = 60;
+        } else if (strcmp(end, "h") == 0) {
+            multiplier = 3600;
+        } else if (strcmp(end, "d") == 0) {
+            multiplier = 86400;
+        } else {
+            return -1;
+        }
     } else {
-        if (*end == '\0' || strcmp(end, "B") == 0) multiplier = 1;
-        else if (strcmp(end, "KiB") == 0) multiplier = 1024;
-        else if (strcmp(end, "MiB") == 0) multiplier = 1024 * 1024;
-        else if (strcmp(end, "GiB") == 0) multiplier = 1024ULL * 1024 * 1024;
-        else return -1;
+        if (*end == '\0' || strcmp(end, "B") == 0) {
+            multiplier = 1;
+        } else if (strcmp(end, "KiB") == 0) {
+            multiplier = 1024;
+        } else if (strcmp(end, "MiB") == 0) {
+            multiplier = 1024 * 1024;
+        } else if (strcmp(end, "GiB") == 0) {
+            multiplier = 1024ULL * 1024 * 1024;
+        } else {
+            return -1;
+        }
     }
-    if (number > (uint64_t)INT64_MAX / multiplier) return -1;
+    if (number > (uint64_t)INT64_MAX / multiplier) {
+        return -1;
+    }
     *value = (uint64_t)number * multiplier;
     return 0;
 }
@@ -188,7 +198,9 @@ static int parse_rule_options(char **text, rule_t *rule) {
     while (parse_word(text, token, sizeof(token)) == 0) {
         if (strcmp(token, "when") == 0) {
             if ((rule->has_min_size && rule->has_max_size && rule->min_size > rule->max_size) ||
-                (rule->has_min_age && rule->has_max_age && rule->min_age > rule->max_age)) return -1;
+                (rule->has_min_age && rule->has_max_age && rule->min_age > rule->max_age)) {
+                return -1;
+            }
             return 0;
         }
         unsigned bit;
@@ -200,59 +212,93 @@ static int parse_rule_options(char **text, rule_t *rule) {
             rule->stop = 1;
         } else {
             char *value = strchr(token, '=');
-            if (value == NULL || value[1] == '\0') return -1;
+            if (value == NULL || value[1] == '\0') {
+                return -1;
+            }
             *value++ = '\0';
             if (strcmp(token, "priority") == 0) {
                 bit = 4u;
                 char *end;
                 errno = 0;
                 long priority = strtol(value, &end, 10);
-                if (end == value || *end != '\0' || errno || priority < INT_MIN || priority > INT_MAX) return -1;
+                if (end == value || *end != '\0' || errno || priority < INT_MIN || priority > INT_MAX) {
+                    return -1;
+                }
                 rule->priority = (int)priority;
             } else if (strcmp(token, "name") == 0) {
                 bit = 8u;
-                if (strlen(value) >= sizeof(rule->name_glob)) return -1;
+                if (strlen(value) >= sizeof(rule->name_glob)) {
+                    return -1;
+                }
                 strcpy(rule->name_glob, value);
             } else if (strcmp(token, "extension") == 0) {
                 bit = 16u;
-                if (*value == '.') value++;
-                if (*value == '\0' || strlen(value) >= sizeof(rule->extension) || strpbrk(value, "/.*?[]\\")) return -1;
+                if (*value == '.') {
+                    value++;
+                }
+                if (*value == '\0' || strlen(value) >= sizeof(rule->extension) ||
+                    strpbrk(value, "/.*?[]\\")) {
+                    return -1;
+                }
                 strcpy(rule->extension, value);
             } else if (strcmp(token, "type") == 0) {
                 bit = 32u;
-                if (strcmp(value, "file") == 0) rule->object_type = OBJECT_FILE;
-                else if (strcmp(value, "directory") == 0) rule->object_type = OBJECT_DIRECTORY;
-                else if (strcmp(value, "symlink") == 0) rule->object_type = OBJECT_SYMLINK;
-                else if (strcmp(value, "any") == 0) rule->object_type = OBJECT_ANY;
-                else return -1;
+                if (strcmp(value, "file") == 0) {
+                    rule->object_type = OBJECT_FILE;
+                } else if (strcmp(value, "directory") == 0) {
+                    rule->object_type = OBJECT_DIRECTORY;
+                } else if (strcmp(value, "symlink") == 0) {
+                    rule->object_type = OBJECT_SYMLINK;
+                } else if (strcmp(value, "any") == 0) {
+                    rule->object_type = OBJECT_ANY;
+                } else {
+                    return -1;
+                }
             } else if (strcmp(token, "min-size") == 0) {
                 bit = 64u;
                 rule->has_min_size = 1;
-                if (parse_quantity(value, 0, &rule->min_size) != 0) return -1;
+                if (parse_quantity(value, 0, &rule->min_size) != 0) {
+                    return -1;
+                }
             } else if (strcmp(token, "max-size") == 0) {
                 bit = 128u;
                 rule->has_max_size = 1;
-                if (parse_quantity(value, 0, &rule->max_size) != 0) return -1;
+                if (parse_quantity(value, 0, &rule->max_size) != 0) {
+                    return -1;
+                }
             } else if (strcmp(token, "min-age") == 0) {
                 bit = 256u;
                 rule->has_min_age = 1;
-                if (parse_quantity(value, 1, &rule->min_age) != 0) return -1;
+                if (parse_quantity(value, 1, &rule->min_age) != 0) {
+                    return -1;
+                }
             } else if (strcmp(token, "max-age") == 0) {
                 bit = 512u;
                 rule->has_max_age = 1;
-                if (parse_quantity(value, 1, &rule->max_age) != 0) return -1;
+                if (parse_quantity(value, 1, &rule->max_age) != 0) {
+                    return -1;
+                }
             } else if (strcmp(token, "conflict") == 0) {
                 bit = 1024u;
-                if (strcmp(value, "fail") == 0) rule->action.conflict = CONFLICT_FAIL;
-                else if (strcmp(value, "skip") == 0) rule->action.conflict = CONFLICT_SKIP;
-                else if (strcmp(value, "rename") == 0) rule->action.conflict = CONFLICT_RENAME;
-                else if (strcmp(value, "overwrite") == 0) rule->action.conflict = CONFLICT_OVERWRITE;
-                else return -1;
+                if (strcmp(value, "fail") == 0) {
+                    rule->action.conflict = CONFLICT_FAIL;
+                } else if (strcmp(value, "skip") == 0) {
+                    rule->action.conflict = CONFLICT_SKIP;
+                } else if (strcmp(value, "rename") == 0) {
+                    rule->action.conflict = CONFLICT_RENAME;
+                } else if (strcmp(value, "overwrite") == 0) {
+                    rule->action.conflict = CONFLICT_OVERWRITE;
+                } else {
+                    return -1;
+                }
                 rule->action.option_flags |= bit;
             } else if (strcmp(token, "retries") == 0) {
                 bit = 2048u;
                 uint64_t number;
-                if (parse_quantity(value, 0, &number) != 0 || strspn(value, "0123456789") != strlen(value) || number > 5) return -1;
+                if (parse_quantity(value, 0, &number) != 0 || strspn(value, "0123456789") != strlen(value) ||
+                    number > 5) {
+                    return -1;
+                }
                 rule->action.retries = (int)number;
                 rule->action.option_flags |= bit;
             } else if (strcmp(token, "backoff") == 0) {
@@ -260,18 +306,26 @@ static int parse_rule_options(char **text, rule_t *rule) {
                 char *end;
                 errno = 0;
                 long number = strtol(value, &end, 10);
-                if (end == value || errno || strcmp(end, "ms") != 0 || number < 1 || number > 5000) return -1;
+                if (end == value || errno || strcmp(end, "ms") != 0 || number < 1 || number > 5000) {
+                    return -1;
+                }
                 rule->action.backoff_ms = (int)number;
                 rule->action.option_flags |= bit;
             } else if (strcmp(token, "timeout") == 0) {
                 bit = 8192u;
                 uint64_t number;
-                if (parse_quantity(value, 1, &number) != 0 || number < 1 || number > 300) return -1;
+                if (parse_quantity(value, 1, &number) != 0 || number < 1 || number > 300) {
+                    return -1;
+                }
                 rule->action.timeout_seconds = (int)number;
                 rule->action.option_flags |= bit;
-            } else return -1;
+            } else {
+                return -1;
+            }
         }
-        if (seen & bit) return -1;
+        if (seen & bit) {
+            return -1;
+        }
         seen |= bit;
     }
     return -1;
@@ -357,7 +411,8 @@ int load_config(const char *path, config_t *config) {
             char mode[16];
             if (mode_seen || parse_word(&text, mode, sizeof(mode)) != 0 ||
                 (strcmp(mode, "all") != 0 && strcmp(mode, "first") != 0) || *trim_whitespace(text)) {
-                log_error("config %s:%d: expected a single 'mode all' or 'mode first' directive", path, line_no);
+                log_error("config %s:%d: expected a single 'mode all' or 'mode first' directive", path,
+                          line_no);
                 fclose(file);
                 return -1;
             }
@@ -365,7 +420,8 @@ int load_config(const char *path, config_t *config) {
             mode_seen = 1;
             continue;
         }
-        if (strcmp(directive, "ignore") == 0 || strcmp(directive, "allow") == 0 || strcmp(directive, "deny") == 0) {
+        if (strcmp(directive, "ignore") == 0 || strcmp(directive, "allow") == 0 ||
+            strcmp(directive, "deny") == 0) {
             if (config->filter_count >= FILEWARD_MAX_FILTERS) {
                 log_error("config %s:%d: too many path filters", path, line_no);
                 fclose(file);
@@ -377,8 +433,9 @@ int load_config(const char *path, config_t *config) {
                 fclose(file);
                 return -1;
             }
-            filter->type = strcmp(directive, "ignore") == 0 ? FILTER_IGNORE :
-                           strcmp(directive, "allow") == 0 ? FILTER_ALLOW : FILTER_DENY;
+            filter->type = strcmp(directive, "ignore") == 0  ? FILTER_IGNORE
+                           : strcmp(directive, "allow") == 0 ? FILTER_ALLOW
+                                                             : FILTER_DENY;
             config->filter_count++;
             continue;
         }
@@ -401,9 +458,9 @@ int load_config(const char *path, config_t *config) {
             rule->line_no = line_no;
             snprintf(rule->name, sizeof(rule->name), "@line-%d", line_no);
             if (strcmp(directive, "rule") == 0) {
-                if (parse_word(&text, rule->name, sizeof(rule->name)) != 0 ||
-                    !valid_rule_name(rule->name)) {
-                    log_error("config %s:%d: invalid rule name (use letters, digits, _, - or .)", path, line_no);
+                if (parse_word(&text, rule->name, sizeof(rule->name)) != 0 || !valid_rule_name(rule->name)) {
+                    log_error("config %s:%d: invalid rule name (use letters, digits, _, - or .)", path,
+                              line_no);
                     fclose(file);
                     return -1;
                 }
@@ -415,7 +472,9 @@ int load_config(const char *path, config_t *config) {
                     }
                 }
                 if (parse_rule_options(&text, rule) != 0) {
-                    log_error("config %s:%d: invalid, duplicate or contradictory rule option; expected options followed by 'when'", path, line_no);
+                    log_error("config %s:%d: invalid, duplicate or contradictory rule option; expected "
+                              "options followed by 'when'",
+                              path, line_no);
                     fclose(file);
                     return -1;
                 }
@@ -441,21 +500,25 @@ int load_config(const char *path, config_t *config) {
             rule->action.target[0] = '\0';
             rule->action.message[0] = '\0';
 
-            if (rule->action.type == ACTION_LOG) {
+            const action_handler_t *handler = action_handler_find(rule->action.type);
+            unsigned capabilities = handler ? handler->capabilities : 0;
+            if (capabilities & ACTION_MESSAGE) {
                 if (read_optional_message(&text, rule->action.message, sizeof(rule->action.message)) != 0) {
                     log_error("config %s:%d: invalid log message", path, line_no);
                     fclose(file);
                     return -1;
                 }
-            } else if (rule->action.type == ACTION_MOVE || rule->action.type == ACTION_COPY ||
-                       rule->action.type == ACTION_ARCHIVE || rule->action.type == ACTION_EXEC) {
+            } else if (capabilities & (ACTION_TARGET | ACTION_COMMAND)) {
                 char storage[1024];
                 char *arguments[FILEWARD_MAX_ARGS + 1];
                 int count = action_split_command(text, storage, sizeof(storage), arguments);
-                if (rule->action.type == ACTION_EXEC) {
-                    if (count < 1 || arguments[0][0] != '/' || strchr(arguments[0], '{') || strchr(arguments[0], '}') ||
+                if (capabilities & ACTION_COMMAND) {
+                    if (count < 1 || arguments[0][0] != '/' || strchr(arguments[0], '{') ||
+                        strchr(arguments[0], '}') ||
                         strlen(trim_whitespace(text)) >= sizeof(rule->action.command)) {
-                        log_error("config %s:%d: exec requires a literal absolute executable and valid quoted arguments", path, line_no);
+                        log_error("config %s:%d: exec requires a literal absolute executable and valid "
+                                  "quoted arguments",
+                                  path, line_no);
                         fclose(file);
                         return -1;
                     }
@@ -468,9 +531,11 @@ int load_config(const char *path, config_t *config) {
                     }
                     strcpy(rule->action.command, trim_whitespace(text));
                 } else {
-                    if (count != 1 || arguments[0][0] == '\0' || strlen(arguments[0]) >= sizeof(rule->action.target) ||
+                    if (count != 1 || arguments[0][0] == '\0' ||
+                        strlen(arguments[0]) >= sizeof(rule->action.target) ||
                         action_validate_template(arguments[0]) != 0) {
-                        log_error("config %s:%d: %s requires one destination directory with valid templates", path, line_no, action_token);
+                        log_error("config %s:%d: %s requires one destination directory with valid templates",
+                                  path, line_no, action_token);
                         fclose(file);
                         return -1;
                     }
@@ -483,9 +548,8 @@ int load_config(const char *path, config_t *config) {
                 return -1;
             }
             unsigned file_options = 1024u | 2048u | 4096u;
-            if (((rule->action.option_flags & file_options) &&
-                 rule->action.type != ACTION_MOVE && rule->action.type != ACTION_COPY && rule->action.type != ACTION_ARCHIVE) ||
-                ((rule->action.option_flags & 8192u) && rule->action.type != ACTION_EXEC)) {
+            if (((rule->action.option_flags & file_options) && !(capabilities & ACTION_FILE_OPTIONS)) ||
+                ((rule->action.option_flags & 8192u) && !(capabilities & ACTION_TIMEOUT))) {
                 log_error("config %s:%d: action options do not apply to %s", path, line_no, action_token);
                 fclose(file);
                 return -1;

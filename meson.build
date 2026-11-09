@@ -1,5 +1,5 @@
 project('fileward', 'c',
-        version: '0.9.0',
+        version: '1.0.0',
         license: 'MIT',
         default_options: ['warning_level=3', 'c_std=c11'])
 
@@ -13,12 +13,12 @@ zlib = dependency('zlib')
 threads = dependency('threads')
 
 executable('fileward',
-           'src/app/main.c', 'src/app/daemon.c', 'src/runtime/engine.c',
+           'src/app/main.c', 'src/app/daemon.c', 'src/app/control.c', 'src/app/service.c', 'src/runtime/engine.c', 'src/observability/state.c',
            'src/observability/query.c',
            'src/watcher/inotify.c',
            'src/observability/log.c', 'src/observability/audit.c',
            'src/core/config.c',
-           'src/actions/action.c',
+           'src/actions/action.c', 'src/actions/registry.c',
            'src/actions/template.c',
            'src/core/glob.c',
            'src/core/rules.c',
@@ -28,15 +28,15 @@ executable('fileward',
 
 rule_tests = executable('rules-test',
                         'tests/unit/rules-test.c', 'src/core/config.c', 'src/core/rules.c',
-                        'src/core/glob.c', 'src/observability/log.c', 'src/observability/audit.c', 'src/actions/template.c',
-                        include_directories: inc, dependencies: threads)
+                        'src/core/glob.c', 'src/observability/log.c', 'src/observability/audit.c', 'src/actions/template.c', 'src/actions/action.c', 'src/actions/registry.c',
+                        include_directories: inc, dependencies: [threads, zlib])
 test('rules', rule_tests)
 
 glob_tests = executable('glob-test', 'tests/unit/glob-test.c', 'src/core/glob.c',
                         include_directories: inc)
 test('glob', glob_tests)
 
-action_tests = executable('actions-test', 'tests/unit/actions-test.c', 'src/actions/action.c',
+action_tests = executable('actions-test', 'tests/unit/actions-test.c', 'src/actions/action.c', 'src/actions/registry.c',
                           'src/actions/template.c', 'src/observability/log.c', 'src/observability/audit.c', include_directories: inc,
                           dependencies: [zlib, threads], link_args: ['-Wl,--wrap=renameat2', '-Wl,--wrap=read', '-Wl,--wrap=write'])
 test('actions', action_tests)
@@ -44,3 +44,7 @@ test('actions', action_tests)
 audit_tests = executable('audit-test', 'tests/unit/audit-test.c', 'src/observability/audit.c',
                          include_directories: inc, dependencies: threads, link_args: ['-Wl,--wrap=write'])
 test('audit', audit_tests)
+
+state_tests = executable('state-test', 'tests/unit/state-test.c', 'src/observability/state.c',
+                         include_directories: inc, dependencies: threads)
+test('state', state_tests)

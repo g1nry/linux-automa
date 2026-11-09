@@ -2,7 +2,7 @@
 #define _GNU_SOURCE
 #endif
 
-#include <fileward/action.h>
+#include "handlers.h"
 #include <fileward/log.h>
 #include <fileward/audit.h>
 #include <spawn.h>
@@ -26,15 +26,21 @@ static const volatile sig_atomic_t *running_flag;
 static const atomic_int *cancel_flag;
 static _Thread_local const char *last_code;
 static _Thread_local int attempts;
-const char *action_last_error_code(int error) { return last_code ? last_code : audit_error_code(error); }
-int action_attempts(void) { return attempts; }
-void action_set_cancel_flag(const atomic_int *flag) { cancel_flag = flag; }
+const char *action_last_error_code(int error) {
+    return last_code ? last_code : audit_error_code(error);
+}
+int action_attempts(void) {
+    return attempts;
+}
+void action_set_cancel_flag(const atomic_int *flag) {
+    cancel_flag = flag;
+}
 
 void action_set_running_flag(const volatile sig_atomic_t *flag) {
     running_flag = flag;
 }
 
-static int cancelled(void) {
+int action_cancelled(void) {
     if (audit_failed() || (cancel_flag && atomic_load(cancel_flag)) || (running_flag && !*running_flag)) {
         errno = ECANCELED;
         return 1;
@@ -44,13 +50,13 @@ static int cancelled(void) {
 
 static int pause_ms(int milliseconds) {
     while (milliseconds > 0) {
-        if (cancelled()) {
+        if (action_cancelled()) {
             return -1;
         }
         int chunk = milliseconds > 20 ? 20 : milliseconds;
         struct timespec delay = {0, chunk * 1000000L};
         while (nanosleep(&delay, &delay) != 0) {
-            if (errno != EINTR || cancelled()) {
+            if (errno != EINTR || action_cancelled()) {
                 return -1;
             }
         }
@@ -231,7 +237,7 @@ static int stream_file(int source, int destination, off_t length, int compress) 
     char buffer[65536];
     int result = 0;
     while (length > 0) {
-        if (cancelled()) {
+        if (action_cancelled()) {
             result = -1;
             break;
         }
@@ -323,7 +329,7 @@ static int copy_or_archive(const char *source, const char *directory, const char
         goto done;
     }
     output = -1;
-    if (cancelled()) {
+    if (action_cancelled()) {
         goto done;
     }
     result = publish(temporary, destination, action->conflict, actual);
@@ -381,8 +387,8 @@ static void terminate_child(pid_t child) {
     }
 }
 
-static int execute_command(const action_t *action, const char *root, const char *filename, event_type_t event,
-                           int dry_run) {
+int action_handle_exec(const action_t *action, const char *root, const char *filename, event_type_t event,
+                       int dry_run) {
     char storage[1024];
     char *arguments[FILEWARD_MAX_ARGS + 1];
     int count = action_split_command(action->command, storage, sizeof(storage), arguments);
@@ -417,26 +423,53 @@ static int execute_command(const action_t *action, const char *root, const char 
     posix_spawn_file_actions_t files;
     posix_spawnattr_t attributes;
     int error = posix_spawn_file_actions_init(&files);
-    if (error) { errno = error; return -1; }
+    if (error) {
+        errno = error;
+        return -1;
+    }
     error = posix_spawnattr_init(&attributes);
-    if (error) { posix_spawn_file_actions_destroy(&files); errno = error; return -1; }
+    if (error) {
+        posix_spawn_file_actions_destroy(&files);
+        errno = error;
+        return -1;
+    }
     sigset_t empty, defaults;
-    sigemptyset(&empty); sigemptyset(&defaults);
-    sigaddset(&defaults, SIGINT); sigaddset(&defaults, SIGTERM); sigaddset(&defaults, SIGHUP); sigaddset(&defaults, SIGPIPE);
-    if (!error) error = posix_spawn_file_actions_addopen(&files, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
-    if (!error) error = posix_spawn_file_actions_addclosefrom_np(&files, 3);
-    if (!error) error = posix_spawnattr_setpgroup(&attributes, 0);
-    if (!error) error = posix_spawnattr_setsigmask(&attributes, &empty);
-    if (!error) error = posix_spawnattr_setsigdefault(&attributes, &defaults);
-    if (!error) error = posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
+    sigemptyset(&empty);
+    sigemptyset(&defaults);
+    sigaddset(&defaults, SIGINT);
+    sigaddset(&defaults, SIGTERM);
+    sigaddset(&defaults, SIGHUP);
+    sigaddset(&defaults, SIGPIPE);
+    if (!error) {
+        error = posix_spawn_file_actions_addopen(&files, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+    }
+    if (!error) {
+        error = posix_spawn_file_actions_addclosefrom_np(&files, 3);
+    }
+    if (!error) {
+        error = posix_spawnattr_setpgroup(&attributes, 0);
+    }
+    if (!error) {
+        error = posix_spawnattr_setsigmask(&attributes, &empty);
+    }
+    if (!error) {
+        error = posix_spawnattr_setsigdefault(&attributes, &defaults);
+    }
+    if (!error) {
+        error = posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGMASK |
+                                                          POSIX_SPAWN_SETSIGDEF);
+    }
     pid_t child = -1;
     extern char **environ;
-    if (!error) error = posix_spawn(&child, arguments[0], &files, &attributes, arguments, environ);
+    if (!error) {
+        error = posix_spawn(&child, arguments[0], &files, &attributes, arguments, environ);
+    }
     posix_spawn_file_actions_destroy(&files);
     posix_spawnattr_destroy(&attributes);
     if (error) {
         last_code = "FW_EXEC_START";
-        audit_emit("exec_status", "failure", "FW_EXEC_START", error, "executable could not be started", 0, 0, NULL);
+        audit_emit("exec_status", "failure", "FW_EXEC_START", error, "executable could not be started", 0, 0,
+                   NULL);
         errno = error;
         return -1;
     }
@@ -464,13 +497,16 @@ static int execute_command(const action_t *action, const char *root, const char 
             break;
         }
         long long now = monotonic_ms();
-        if (cancelled() || now < 0 || now - start >= (long long)action->timeout_seconds * 1000) {
-            int saved = cancelled() ? ECANCELED : ETIMEDOUT;
+        if (action_cancelled() || now < 0 || now - start >= (long long)action->timeout_seconds * 1000) {
+            int saved = action_cancelled() ? ECANCELED : ETIMEDOUT;
             last_code = saved == ECANCELED ? "FW_CANCELLED" : "FW_EXEC_TIMEOUT";
             terminate_child(child);
             errno = saved;
-            if (saved == ECANCELED) log_info("exec '%s' cancelled", arguments[0]);
-            else log_error("exec '%s' timed out", arguments[0]);
+            if (saved == ECANCELED) {
+                log_info("exec '%s' cancelled", arguments[0]);
+            } else {
+                log_error("exec '%s' timed out", arguments[0]);
+            }
             return -1;
         }
         if (pause_ms(20) != 0) {
@@ -481,11 +517,14 @@ static int execute_command(const action_t *action, const char *root, const char 
         }
     }
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        audit_exec_status(WIFEXITED(status) ? WEXITSTATUS(status) : -1, WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+        audit_exec_status(WIFEXITED(status) ? WEXITSTATUS(status) : -1,
+                          WIFSIGNALED(status) ? WTERMSIG(status) : 0);
         last_code = WIFSIGNALED(status) ? "FW_EXEC_SIGNAL" : "FW_EXEC_EXIT";
         char detail[128];
-        snprintf(detail, sizeof(detail), "exit_status=%d signal=%d", WIFEXITED(status) ? WEXITSTATUS(status) : -1, WIFSIGNALED(status) ? WTERMSIG(status) : 0);
-        audit_emit("exec_status", "failure", WIFSIGNALED(status) ? "FW_EXEC_SIGNAL" : "FW_EXEC_EXIT", 0, detail, 0, 0, NULL);
+        snprintf(detail, sizeof(detail), "exit_status=%d signal=%d",
+                 WIFEXITED(status) ? WEXITSTATUS(status) : -1, WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+        audit_emit("exec_status", "failure", WIFSIGNALED(status) ? "FW_EXEC_SIGNAL" : "FW_EXEC_EXIT", 0,
+                   detail, 0, 0, NULL);
         log_error("exec '%s' failed (exit %d, signal %d)", arguments[0],
                   WIFEXITED(status) ? WEXITSTATUS(status) : -1, WIFSIGNALED(status) ? WTERMSIG(status) : 0);
         errno = ECHILD;
@@ -528,37 +567,24 @@ static int file_action(const action_t *action, const char *source, const char *d
     return copy_or_archive(source, directory, destination, action, 0);
 }
 
-int execute_action(const action_t *action, const char *watch_path, const char *filename, event_type_t event,
-                   int dry_run) {
-    last_code = NULL; attempts = 1;
-    if (!action || !watch_path || !filename || !safe_relative(filename)) {
-        errno = EINVAL;
-        return -1;
+int action_handle_log(const action_t *action, const char *watch_path, const char *filename,
+                      event_type_t event, int dry_run) {
+    if (action->message[0]) {
+        log_info("%s: %s", dry_run ? "dry-run: would log" : "action log", action->message);
+    } else {
+        log_info("%s: %s %s/%s", dry_run ? "dry-run: would log" : "action log",
+                 event == EVENT_DELETED      ? "deleted"
+                 : event == EVENT_MODIFIED   ? "modified"
+                 : event == EVENT_MOVED_TO   ? "moved_to"
+                 : event == EVENT_MOVED_FROM ? "moved_from"
+                                             : "created",
+                 watch_path, filename);
     }
-    if (cancelled()) {
-        return -1;
-    }
-    if (action->type == ACTION_LOG) {
-        if (action->message[0]) {
-            log_info("%s: %s", dry_run ? "dry-run: would log" : "action log", action->message);
-        } else {
-            log_info("%s: %s %s/%s", dry_run ? "dry-run: would log" : "action log",
-                     event == EVENT_DELETED      ? "deleted"
-                     : event == EVENT_MODIFIED   ? "modified"
-                     : event == EVENT_MOVED_TO   ? "moved_to"
-                     : event == EVENT_MOVED_FROM ? "moved_from"
-                                                 : "created",
-                     watch_path, filename);
-        }
-        return 0;
-    }
-    if (action->type == ACTION_EXEC) {
-        return execute_command(action, watch_path, filename, event, dry_run);
-    }
-    if (action->type != ACTION_MOVE && action->type != ACTION_COPY && action->type != ACTION_ARCHIVE) {
-        errno = EINVAL;
-        return -1;
-    }
+    return 0;
+}
+
+int action_handle_file(const action_t *action, const char *watch_path, const char *filename,
+                       event_type_t event, int dry_run) {
     char source[PATH_MAX], directory[PATH_MAX], destination[PATH_MAX];
     if (format_path(source, sizeof(source), watch_path, filename) != 0 ||
         action_expand_target(action->target, watch_path, filename, event, directory) != 0) {
@@ -590,10 +616,11 @@ int execute_action(const action_t *action, const char *watch_path, const char *f
         attempts = attempt + 1;
         result = file_action(action, source, directory, destination);
         int saved = errno;
-        if (result >= 0 || !transient_error(saved) || attempt == action->retries || cancelled()) {
+        if (result >= 0 || !transient_error(saved) || attempt == action->retries || action_cancelled()) {
             break;
         }
-        audit_emit("action_retry", "retry", audit_error_code(saved), saved, strerror(saved), attempt + 1, 0, NULL);
+        audit_emit("action_retry", "retry", audit_error_code(saved), saved, strerror(saved), attempt + 1, 0,
+                   NULL);
         log_warn("%s failed for '%s': %s; retry %d/%d in %dms", action_type_name(action->type), source,
                  strerror(saved), attempt + 1, action->retries, delay);
         if (pause_ms(delay) != 0) {
@@ -610,4 +637,23 @@ int execute_action(const action_t *action, const char *watch_path, const char *f
                   strerror(errno));
     }
     return result;
+}
+
+int execute_action(const action_t *action, const char *watch_path, const char *filename, event_type_t event,
+                   int dry_run) {
+    last_code = NULL;
+    attempts = 1;
+    if (!action || !watch_path || !filename || !safe_relative(filename)) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (action_cancelled()) {
+        return -1;
+    }
+    const action_handler_t *handler = action_handler_find(action->type);
+    if (!handler) {
+        errno = EINVAL;
+        return -1;
+    }
+    return handler->execute(action, watch_path, filename, event, dry_run);
 }

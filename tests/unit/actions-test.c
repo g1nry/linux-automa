@@ -75,6 +75,19 @@ static void expect_text(const char *name, const char *expected) {
 }
 
 int main(void) {
+    CHECK(action_handler_count() == 5);
+    for (size_t i = 0; i < action_handler_count(); i++) {
+        const action_handler_t *handler = action_handler_at(i);
+        CHECK(handler && handler->execute && handler->capabilities);
+        CHECK(action_handler_find(handler->type) == handler);
+        CHECK(action_handler_named(handler->name) == handler);
+        for (size_t j = 0; j < i; j++) {
+            CHECK(action_handler_at(j)->type != handler->type);
+            CHECK(strcmp(action_handler_at(j)->name, handler->name) != 0);
+        }
+    }
+    CHECK(!action_handler_at(action_handler_count()));
+    CHECK(!action_handler_named("undefined"));
     char out[PATH_MAX];
     CHECK(action_expand_template("{root}/{dir}/{stem}.{ext}:{name}:{relative}:{event}:{{literal}}", "/root",
                                  "a/x.txt", EVENT_MOVED_TO, out, sizeof(out)) == 0);
@@ -189,6 +202,7 @@ int main(void) {
     busy_failures = 0;
     volatile sig_atomic_t running = 0;
     action_set_running_flag(&running);
+    CHECK(action_cancelled() == 1 && errno == ECANCELED);
     CHECK(execute_action(&action, "inbox", "exhaust.txt", EVENT_CREATED, 0) < 0 && errno == ECANCELED);
     action_set_running_flag(NULL);
 

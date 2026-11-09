@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:fileward:health:1",
+  "title": "Состояние живого процесса Fileward, версия 1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "provider",
+    "program_version",
+    "status",
+    "code",
+    "pid",
+    "uptime_seconds",
+    "watched_directories",
+    "workers",
+    "queued",
+    "active",
+    "capacity",
+    "config_generation",
+    "events_observed",
+    "events_dropped",
+    "chains_completed",
+    "action_failures",
+    "audit_healthy",
+    "watch_coverage_ok"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "provider": {
+      "const": "fileward"
+    },
+    "program_version": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "healthy",
+        "degraded"
+      ]
+    },
+    "code": {
+      "enum": [
+        "FW_OK",
+        "FW_HEALTH_DEGRADED"
+      ]
+    },
+    "pid": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "uptime_seconds": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "watched_directories": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "workers": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "queued": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "active": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "capacity": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "config_generation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "events_observed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "events_dropped": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "chains_completed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "action_failures": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "audit_healthy": {
+      "type": "boolean"
+    },
+    "watch_coverage_ok": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": true
+}

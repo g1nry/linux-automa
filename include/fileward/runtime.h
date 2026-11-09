@@ -14,5 +14,10 @@ runtime_t *runtime_create(const config_t *config, const runtime_options_t *optio
 int runtime_reload(runtime_t *runtime, const config_t *config);
 int runtime_observe(const file_event_t *event, void *runtime);
 void runtime_tick(runtime_t *runtime);
+typedef struct {
+    unsigned workers, queued, active, capacity, generation;
+    unsigned long long observed, dropped, completed, action_failures;
+} runtime_status_t;
+void runtime_status(runtime_t *, runtime_status_t *);
 void runtime_destroy(runtime_t *runtime);
 #endif

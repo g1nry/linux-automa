@@ -6,6 +6,8 @@
 #endif
 
 #include "daemon.h"
+#include "service.h"
+#include <fileward/control.h>
 #include <fileward/action.h>
 #include <fileward/config.h>
 #include <fileward/rules.h>
@@ -28,6 +30,9 @@
 #include <time.h>
 #include <unistd.h>
 
+#ifndef FILEWARD_VERSION
+#define FILEWARD_VERSION "development"
+#endif
 #define EXIT_OK 0
 #define EXIT_USAGE 1
 #define EXIT_CONFIG 2
@@ -89,11 +94,11 @@ static void print_usage(const char *program_name) {
     fprintf(stderr, "Usage: %s <subcommand> [options]\n", program_name);
     fprintf(stderr,
             "       %s run [--config <file>] [--dry-run] [--daemon] [--pidfile <file>] [--log-file <file>] "
-            "[--state-file <file>] [<directory_to_watch>]\n",
+            "[--state-file <file>] [--control-socket <path>] [--systemd] [<directory_to_watch>]\n",
             program_name);
     fprintf(stderr,
             "       %s start [--config <file>] [--dry-run] [--pidfile <file>] [--log-file <file>] "
-            "[--state-file <file>] [<directory_to_watch>]\n",
+            "[--state-file <file>] [--control-socket <path>] [--systemd] [<directory_to_watch>]\n",
             program_name);
     fprintf(stderr, "       %s stop [--pidfile <file>]\n", program_name);
     fprintf(stderr, "       %s status [--pidfile <file>]\n", program_name);
@@ -106,7 +111,7 @@ static void print_usage(const char *program_name) {
 static void print_run_usage(const char *program_name) {
     fprintf(stderr,
             "Usage: %s run [--config <file>] [--dry-run] [--daemon] [--pidfile <file>] [--log-file <file>] "
-            "[--state-file <file>] [<directory_to_watch>]\n",
+            "[--state-file <file>] [--control-socket <path>] [--systemd] [<directory_to_watch>]\n",
             program_name);
 }
 
@@ -131,6 +136,9 @@ static void print_help(const char *program_name) {
     fprintf(stderr, "  explain  explain which rules would match a path for an event\n");
     fprintf(stderr, "  history  show recent action results as JSONL\n  stats    aggregate counters from the "
                     "retained journal\n");
+    fprintf(stderr, "  health   live status via the control socket (exit 4 when degraded)\n");
+    fprintf(stderr, "  actions  list registered action handlers\n");
+    fprintf(stderr, "\nRuntime options: --control-socket <path> --systemd\n");
     fprintf(stderr, "\nRuntime options: --journal <file> --journal-max-bytes <bytes> --workers 1..32\n");
     fprintf(stderr, "  --journal-sync: fdatasync every structured record\n");
     fprintf(stderr, "  --queue-size 1..4096 --ready-mode close-write|stable|immediate\n");
@@ -364,6 +372,87 @@ static int canonical_config_root(config_t *config) {
     return 0;
 }
 
+typedef struct {
+    runtime_t *runtime;
+    config_t *config;
+    const char *config_path, *watch_path;
+    unsigned generation;
+    int dry_run;
+    struct timespec started;
+} application_t;
+
+static int application_reload(application_t *application) {
+    if (!application->config_path) {
+        errno = EINVAL;
+        return -1;
+    }
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    char notification[160];
+    snprintf(notification, sizeof(notification),
+             "RELOADING=1\nMONOTONIC_USEC=%llu\nSTATUS=Reloading configuration",
+             (unsigned long long)now.tv_sec * 1000000 + now.tv_nsec / 1000);
+    if (service_notify(notification)) {
+        return -1;
+    }
+    config_t next;
+    const char *root = NULL;
+    audit_context(application->config->watch_path, "", "", application->generation, application->dry_run,
+                  NULL);
+    int error = load_watch_config(application->config_path, application->watch_path, &next, &root) ||
+                canonical_config_root(&next) || strcmp(next.watch_path, application->config->watch_path);
+    if (!error && runtime_reload(application->runtime, &next)) {
+        error = 1;
+    }
+    if (error) {
+        log_error("failed to reload config: %s; keeping previous rules", application->config_path);
+        audit_emit("config_reload", "failure", "FW_RELOAD_REJECTED", 0,
+                   "configuration rejected; previous generation retained", 0, 0, NULL);
+        (void)service_notify("READY=1\nSTATUS=Reload rejected; previous configuration remains active");
+        errno = EINVAL;
+        return -1;
+    }
+    *application->config = next;
+    application->generation++;
+    audit_context(application->config->watch_path, "", "", application->generation, application->dry_run,
+                  NULL);
+    audit_emit("config_reload", "success", "FW_OK", 0, "new immutable configuration published", 0, 0, NULL);
+    log_info("reloaded config: %s", application->config_path);
+    return service_notify("READY=1\nSTATUS=Configuration reloaded");
+}
+static int application_control(void *data, const char *command, char *out, size_t size) {
+    application_t *application = data;
+    if (strcmp(command, "reload") == 0) {
+        int error = application_reload(application);
+        snprintf(
+            out, size, "{\"schema_version\":1,\"status\":\"%s\",\"code\":\"%s\",\"config_generation\":%u}\n",
+            error ? "error" : "reloaded", error ? "FW_RELOAD_REJECTED" : "FW_OK", application->generation);
+        return error;
+    }
+    if (strcmp(command, "health") != 0) {
+        snprintf(out, size, "{\"schema_version\":1,\"status\":\"error\",\"code\":\"FW_CONTROL_REQUEST\"}\n");
+        return -1;
+    }
+    runtime_status_t status;
+    runtime_status(application->runtime, &status);
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    int audit_ok = !audit_failed();
+    int healthy = audit_ok && !watcher_degraded() && !status.dropped;
+    snprintf(out, size,
+             "{\"schema_version\":1,\"provider\":\"fileward\",\"program_version\":\"%s\",\"status\":\"%s\","
+             "\"code\":\"%s\",\"pid\":%ld,\"uptime_seconds\":%lld,\"audit_healthy\":%s,\"watch_coverage_ok\":"
+             "%s,\"watched_directories\":%d,\"workers\":%u,\"queued\":%u,\"active\":%u,\"capacity\":%u,"
+             "\"config_generation\":%u,\"events_observed\":%llu,\"events_dropped\":%llu,\"chains_completed\":"
+             "%llu,\"action_failures\":%llu}\n",
+             FILEWARD_VERSION, healthy ? "healthy" : "degraded", healthy ? "FW_OK" : "FW_HEALTH_DEGRADED",
+             (long)getpid(), (long long)(now.tv_sec - application->started.tv_sec),
+             audit_ok ? "true" : "false", watcher_degraded() ? "false" : "true", watcher_watch_count(),
+             status.workers, status.queued, status.active, status.capacity, status.generation,
+             status.observed, status.dropped, status.completed, status.action_failures);
+    return 0;
+}
+
 static int run_command(int argc, char *argv[], int daemon_mode) {
     const char *config_path = NULL;
     const char *watch_path = NULL;
@@ -375,7 +464,10 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
     runtime_t *runtime = NULL;
     runtime_options_t options = {.workers = 4, .capacity = 256, .settle_ms = 100, .ready_timeout_ms = 300000};
     char journal_default[PATH_MAX];
-    const char *journal_path = NULL;
+    const char *journal_path = NULL, *control_path = NULL;
+    char control_default[PATH_MAX];
+    int systemd_mode = 0;
+    control_server_t *control = NULL;
     int journal_sync = 0;
     uint64_t journal_limit = 64ULL * 1024 * 1024;
     const char *watch_root = NULL;
@@ -416,6 +508,13 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
                 return EXIT_USAGE;
             }
             state_file_path = argv[++i];
+        } else if (strcmp(argv[i], "--control-socket") == 0) {
+            if (++i >= argc) {
+                return EXIT_USAGE;
+            }
+            control_path = argv[i];
+        } else if (strcmp(argv[i], "--systemd") == 0) {
+            systemd_mode = 1;
         } else if (strcmp(argv[i], "--journal-sync") == 0) {
             journal_sync = 1;
         } else if (strcmp(argv[i], "--journal") == 0) {
@@ -486,6 +585,24 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
     if (options.ready_timeout_ms <= options.settle_ms) {
         return EXIT_USAGE;
     }
+    if (systemd_mode && daemon_mode) {
+        return EXIT_USAGE;
+    }
+    if (service_initialize(systemd_mode)) {
+        fprintf(stderr, "FW_SYSTEMD_NOTIFY: missing or invalid systemd environment\n");
+        return EXIT_RUNTIME;
+    }
+    if (!control_path) {
+        if (journal_path) {
+            int size = snprintf(control_default, sizeof(control_default), "%s.sock", journal_path);
+            if (size < 0 || size >= (int)sizeof(control_default)) {
+                return EXIT_USAGE;
+            }
+        } else if (control_default_path(control_default, sizeof(control_default))) {
+            return EXIT_USAGE;
+        }
+        control_path = control_default;
+    }
     if (!journal_path) {
         const char *state_home = getenv("XDG_STATE_HOME");
         const char *home = getenv("HOME");
@@ -517,7 +634,7 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
         audit_close();
         return EXIT_RUNTIME;
     }
-    const char *artifacts[] = {journal_path, state_file_path, log_file_path};
+    const char *artifacts[] = {journal_path, state_file_path, log_file_path, control_path};
     for (unsigned i = 0; i < sizeof(artifacts) / sizeof(artifacts[0]); i++) {
         char relative[PATH_MAX];
         if (artifacts[i] && path_within_root(watch_root, artifacts[i], relative, sizeof(relative)) == 1) {
@@ -556,10 +673,31 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
     signal(SIGTERM, handle_signal);
     signal(SIGHUP, handle_signal);
 
+    control = control_open(control_path);
+    if (!control) {
+        audit_emit("runtime_error", "failure", "FW_CONTROL_LISTEN", errno,
+                   "control socket could not be opened", 0, 0, NULL);
+        fprintf(stderr, "FW_CONTROL_LISTEN: %s: %s\n", control_path, strerror(errno));
+        notify_startup(0);
+        release_pidfile();
+        audit_close();
+        return EXIT_RUNTIME;
+    }
+    char relative_control[PATH_MAX];
+    if (path_within_root(watch_root, control_path, relative_control, sizeof(relative_control)) == 1) {
+        audit_emit("config_load", "failure", "FW_OUTPUT_INSIDE_WATCH", 0,
+                   "control socket must be outside watch", 0, 0, NULL);
+        control_close(control);
+        notify_startup(0);
+        release_pidfile();
+        audit_close();
+        return EXIT_CONFIG;
+    }
     if (start_watcher(watch_root) != 0) {
         audit_emit("watcher_error", "failure", "FW_WATCHER_START", errno,
                    "watch root could not be initialized", 0, 0, NULL);
         audit_close();
+        control_close(control);
         notify_startup(0);
         release_pidfile();
         return EXIT_RUNTIME;
@@ -572,6 +710,7 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
         audit_emit("runtime_error", "failure", "FW_WORKER_START", errno, "worker pool could not start", 0, 0,
                    NULL);
         stop_watcher();
+        control_close(control);
         notify_startup(0);
         release_pidfile();
         audit_close();
@@ -582,42 +721,48 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
     if (audit_failed()) {
         runtime_destroy(runtime);
         stop_watcher();
+        control_close(control);
         notify_startup(0);
         audit_close();
         release_pidfile();
         return EXIT_RUNTIME;
     }
+    application_t application = {.runtime = runtime,
+                                 .config = &config,
+                                 .config_path = config_path,
+                                 .watch_path = watch_path,
+                                 .generation = 1,
+                                 .dry_run = dry_run};
+    clock_gettime(CLOCK_MONOTONIC, &application.started);
+    if (service_notify("READY=1\nSTATUS=Watching files; worker pool and control socket ready")) {
+        audit_emit("runtime_error", "failure", "FW_SYSTEMD_NOTIFY", errno, "readiness notification failed", 0,
+                   0, NULL);
+        runtime_destroy(runtime);
+        control_close(control);
+        stop_watcher();
+        notify_startup(0);
+        release_pidfile();
+        audit_close();
+        return EXIT_RUNTIME;
+    }
     notify_startup(1);
     log_info("fileward started. Press Ctrl+C to stop.%s", dry_run ? " (dry-run mode)" : "");
     int result = EXIT_OK;
-    unsigned generation = 1;
     while (running) {
         if (audit_failed()) {
             result = EXIT_RUNTIME;
             break;
         }
-        if (reload_requested && config_path != NULL) {
+        if (reload_requested) {
             reload_requested = 0;
-            config_t new_config;
-            const char *new_watch_root = NULL;
-            audit_context(config.watch_path, "", "", generation, dry_run, NULL);
-            if (load_watch_config(config_path, watch_path, &new_config, &new_watch_root) != 0 ||
-                canonical_config_root(&new_config) != 0 ||
-                strcmp(new_config.watch_path, config.watch_path) != 0) {
-                log_error("failed to reload config: %s; keeping previous rules", config_path);
-                audit_emit("config_reload", "failure", "FW_RELOAD_REJECTED", 0,
-                           "invalid configuration or changed watch root", 0, 0, NULL);
-            } else if (runtime_reload(runtime, &new_config)) {
-                audit_emit("config_reload", "failure", "FW_MEMORY_LIMIT", ENOMEM, "keeping previous rules", 0,
-                           0, NULL);
-            } else {
-                config = new_config;
-                generation++;
-                audit_context(config.watch_path, "", "", generation, dry_run, NULL);
-                audit_emit("config_reload", "success", "FW_OK", 0, "new immutable configuration published", 0,
-                           0, NULL);
-                log_info("reloaded config: %s", config_path);
-            }
+            (void)application_reload(&application);
+        }
+        control_poll(control, application_control, &application);
+        if (service_watchdog()) {
+            audit_emit("runtime_error", "failure", "FW_SYSTEMD_NOTIFY", errno, "watchdog notification failed",
+                       0, 0, NULL);
+            result = EXIT_RUNTIME;
+            break;
         }
         if (watcher_process_events(50, runtime_observe, runtime) != 0) {
             audit_emit("watcher_error", "failure", "FW_WATCHER_IO", errno, "watcher stopped after an error",
@@ -627,8 +772,10 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
         }
         runtime_tick(runtime);
     }
+    (void)service_notify("STOPPING=1\nSTATUS=Stopping workers");
+    control_close(control);
     runtime_destroy(runtime);
-    audit_context(config.watch_path, "", "", generation, dry_run, NULL);
+    audit_context(config.watch_path, "", "", application.generation, dry_run, NULL);
     stop_watcher();
     audit_emit("daemon_stopped", result ? "failure" : "success", result ? "FW_RUNTIME_FAILED" : "FW_OK", 0,
                "workers joined and pending jobs cancelled", 0, 0, NULL);
@@ -705,7 +852,38 @@ static int status_command(int argc, char *argv[]) {
     return EXIT_OK;
 }
 
+static int live_command(int argc, char **argv, int reload) {
+    char path[PATH_MAX], response[4096];
+    if (control_default_path(path, sizeof(path))) {
+        return EXIT_USAGE;
+    }
+    if (argc == 1 && is_help_arg(argv[0])) {
+        printf("Usage: fileward %s [--socket <path>]\n", reload ? "reload" : "health");
+        return 0;
+    }
+    if (argc) {
+        if (argc != 2 || strcmp(argv[0], "--socket") || strlen(argv[1]) >= sizeof(path)) {
+            return EXIT_USAGE;
+        }
+        snprintf(path, sizeof(path), "%s", argv[1]);
+    }
+    if (control_request(path, reload ? "reload" : "health", response, sizeof(response))) {
+        fprintf(stderr, "FW_CONTROL_CONNECT: %s: %s\n", path, strerror(errno));
+        return EXIT_RUNTIME;
+    }
+    fputs(response, stdout);
+    if (reload) {
+        return strstr(response, "\"status\":\"reloaded\"") ? 0 : EXIT_CONFIG;
+    }
+    return strstr(response, "\"status\":\"healthy\"")    ? 0
+           : strstr(response, "\"status\":\"degraded\"") ? 4
+                                                         : EXIT_RUNTIME;
+}
+
 static int reload_command(int argc, char *argv[]) {
+    if (!argc || strcmp(argv[0], "--socket") == 0) {
+        return live_command(argc, argv, 1);
+    }
     const char *pidfile_path = "/tmp/fileward.pid";
     for (int i = 0; i < argc; i++) {
         if (strcmp(argv[i], "--pidfile") == 0) {
@@ -964,6 +1142,20 @@ int main(int argc, char *argv[]) {
     }
 
     const char *command = argv[1];
+    if (strcmp(command, "--version") == 0) {
+        puts(FILEWARD_VERSION);
+        return 0;
+    }
+    if (strcmp(command, "health") == 0) {
+        return live_command(argc - 2, argv + 2, 0);
+    }
+    if (strcmp(command, "actions") == 0) {
+        for (size_t i = 0; i < action_handler_count(); i++) {
+            const action_handler_t *handler = action_handler_at(i);
+            printf("%s\tcapabilities=%u\n", handler->name, handler->capabilities);
+        }
+        return 0;
+    }
     if (strcmp(command, "history") == 0 || strcmp(command, "stats") == 0) {
         return journal_command(argc - 2, argv + 2, strcmp(command, "stats") == 0);
     }
