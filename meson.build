@@ -13,7 +13,7 @@ zlib = dependency('zlib')
 threads = dependency('threads')
 
 executable('fileward',
-           'src/app/main.c', 'src/runtime/engine.c',
+           'src/app/main.c', 'src/app/daemon.c', 'src/runtime/engine.c',
            'src/observability/query.c',
            'src/watcher/inotify.c',
            'src/observability/log.c', 'src/observability/audit.c',

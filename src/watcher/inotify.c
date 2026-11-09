@@ -288,6 +288,9 @@ int watcher_process_events(int timeout_ms, int (*callback)(const file_event_t *,
             }
         }
 
+        /* IN_IGNORED has no filename: retire it before the empty-event fast path. */
+        if (event->mask & IN_IGNORED) remove_watch_entry(event->wd);
+
         if (file_event.type != EVENT_OVERFLOW && file_event.type != EVENT_WATCH_LOST && file_event.filename[0] == '\0' && !(event->mask & IN_CREATE) && !(event->mask & IN_MOVED_TO) && !(event->mask & IN_DELETE) && !(event->mask & IN_MOVED_FROM) && !(event->mask & IN_MODIFY)) {
             offset += EVENT_SIZE + event->len;
             continue;

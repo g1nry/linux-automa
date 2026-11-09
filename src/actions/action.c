@@ -469,11 +469,14 @@ static int execute_command(const action_t *action, const char *root, const char 
             last_code = saved == ECANCELED ? "FW_CANCELLED" : "FW_EXEC_TIMEOUT";
             terminate_child(child);
             errno = saved;
-            log_error("exec '%s' %s", arguments[0], saved == ECANCELED ? "cancelled" : "timed out");
+            if (saved == ECANCELED) log_info("exec '%s' cancelled", arguments[0]);
+            else log_error("exec '%s' timed out", arguments[0]);
             return -1;
         }
         if (pause_ms(20) != 0) {
+            int saved = errno;
             terminate_child(child);
+            errno = saved;
             return -1;
         }
     }
@@ -600,6 +603,8 @@ int execute_action(const action_t *action, const char *watch_path, const char *f
     }
     if (result == ACTION_SKIPPED) {
         log_info("skipped '%s': destination exists", source);
+    } else if (result < 0 && errno == ECANCELED) {
+        log_info("%s cancelled for '%s'", action_type_name(action->type), source);
     } else if (result < 0) {
         log_error("cannot %s '%s' to '%s': %s", action_type_name(action->type), source, destination,
                   strerror(errno));

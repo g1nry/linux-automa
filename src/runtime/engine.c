@@ -191,7 +191,7 @@ static void execute_job(runtime_t *runtime, job_t *job) {
                                     runtime->options.dry_run);
         int error = status < 0 ? errno : 0;
         audit_emit("action_result",
-                   status < 0                 ? "failure"
+                   status < 0                 ? (error == ECANCELED ? "cancelled" : "failure")
                    : status == ACTION_SKIPPED ? "skipped"
                    : runtime->options.dry_run ? "dry_run"
                                               : "success",
@@ -200,7 +200,9 @@ static void execute_job(runtime_t *runtime, job_t *job) {
                                               : "FW_OK",
                    error, status < 0 ? strerror(error) : "action completed", action_attempts(),
                    clock_ms() - start, NULL);
-        if (status < 0) {
+        if (status < 0 && error == ECANCELED) {
+            log_info("rule '%s': action cancelled for %s", rule->name, job->event.filename);
+        } else if (status < 0) {
             log_error("rule '%s': action failed for %s: %s", rule->name, job->event.filename,
                       strerror(error));
         } else if (!status) {

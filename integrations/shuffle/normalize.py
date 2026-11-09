@@ -22,6 +22,11 @@ def normalize(payload):
             raise ValueError('invalid ' + field)
     if record['kind'] not in ALERT_KINDS:
         raise ValueError('record is not actionable for this workflow')
+    dry_run = record.get('dry_run', False)
+    if type(dry_run) is not bool:
+        if dry_run in ('true', '1', 1): dry_run = True
+        elif dry_run in ('false', '0', 0): dry_run = False
+        else: raise ValueError('invalid dry_run')
     return {
         'dedup_key': 'fileward:' + record['host_id'] + ':' + record['event_id'],
         'event_id': record['event_id'], 'source_event_id': record.get('parent_id', ''),
@@ -30,7 +35,7 @@ def normalize(payload):
         'rule_name': record.get('rule_name', ''), 'action': record.get('action', ''),
         'relative_path': record.get('relative_path', ''),
         'path_base64': record.get('path_base64', ''), 'watch_root': record.get('watch_root', ''),
-        'timestamp': record.get('timestamp', ''), 'dry_run': record.get('dry_run', False),
+        'timestamp': record.get('timestamp', ''), 'dry_run': dry_run,
     }
 
 

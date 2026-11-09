@@ -3,6 +3,7 @@
 import base64
 import json
 import os
+import resource
 from pathlib import Path
 import signal
 import subprocess
@@ -86,7 +87,9 @@ elif sys.argv[1] == "record":
     try:
         # Pause an open writer for longer than settle-ms: created must not copy yet.
         write_config(f'rule copy when created ** copy {root}/copies\n')
-        start('--workers', '3')
+        start('--workers', '3', '--journal-sync')
+        duplicate = subprocess.run([binary, 'run', '--config', str(config), '--journal', str(journal)], capture_output=True, timeout=3)
+        check(duplicate.returncode == 3 and b'FW_JOURNAL_OPEN' in duplicate.stderr, 'journal must have one writer')
         source = inbox / 'slow.txt'
         with source.open('wb') as writer:
             writer.write(b'first'); writer.flush()
@@ -118,6 +121,10 @@ elif sys.argv[1] == "record":
         check(result['duration_ms'] >= 0 and result['config_generation'] == 1, 'typed fields')
         history = subprocess.check_output([binary, 'history', '--journal', str(journal)], text=True)
         check(all(json.loads(line)['kind'] == 'action_result' for line in history.splitlines()), 'history default filtering')
+        linked = subprocess.check_output([binary, 'history', '--journal', str(journal), '--all', '--event-id', result['parent_id']], text=True)
+        linked_rows = [json.loads(line) for line in linked.splitlines()]
+        check(any(r['event_id'] == result['parent_id'] for r in linked_rows), 'history root link')
+        check(all(r['event_id'] == result['parent_id'] or r['parent_id'] == result['parent_id'] for r in linked_rows), 'history link filtering')
         stats = json.loads(subprocess.check_output([binary, 'stats', '--journal', str(journal)]))
         check(stats['actions_succeeded'] == 1 and stats['rules_matched'] == 1, stats)
 
@@ -135,6 +142,23 @@ elif sys.argv[1] == "record":
         wait(lambda: has('action_result', 'fast-new', generation=2), timeout=1)
         check(not has('action_result', 'slow-job'), 'slow action should still be running while fast result arrives')
         wait(lambda: has('action_result', 'slow-job', generation=1))
+        stop()
+
+        # Replacing a root symlink cannot redirect an already running executor.
+        alias = root / 'alias'
+        alias.symlink_to(inbox, target_is_directory=True)
+        other = root / 'other-tree'
+        other.mkdir()
+        config.write_text(f'watch {alias}\nrule pin when created ** copy {root}/pinned-copy\n')
+        start()
+        alias.unlink(); alias.symlink_to(other, target_is_directory=True)
+        (other / 'pinned.txt').write_text('untouched')
+        (inbox / 'pinned.txt').write_text('original-root')
+        wait(lambda: (root / 'pinned-copy/pinned.txt').exists())
+        check((root / 'pinned-copy/pinned.txt').read_text() == 'original-root', 'root symlink redirected source')
+        check((other / 'pinned.txt').read_text() == 'untouched', 'wrong root modified')
+        process.send_signal(signal.SIGHUP)
+        wait(lambda: has('config_reload', code='FW_RELOAD_REJECTED'))
         stop()
 
         # Multiple event chains for one path must not overlap.
@@ -192,6 +216,19 @@ elif sys.argv[1] == "record":
         outputs = list((root / 'collision-output').iterdir())
         check(len(outputs) == 60 and {p.read_text() for p in outputs} == {str(i) for i in range(60)}, 'concurrent collision data loss')
 
+        # Deleted watches must be retired even though IN_IGNORED has no filename.
+        write_config('rule dirs type=directory when created ** log\n')
+        start('--workers', '4', '--queue-size', '1024')
+        for i in range(280): (inbox / f'old-dir-{i}').mkdir()
+        wait(lambda: 'watching directory: ' + str(inbox / 'old-dir-279') in log.read_text())
+        for i in range(280): (inbox / f'old-dir-{i}').rmdir()
+        wait(lambda: has('file_observed', 'old-dir-279') and any(r['event_type'] == 'deleted' and r['relative_path'] == 'old-dir-279' for r in records()))
+        for i in range(280): (inbox / f'new-dir-{i}').mkdir()
+        wait(lambda: 'watching directory: ' + str(inbox / 'new-dir-279') in log.read_text())
+        stop()
+        check(not has('watcher_error', code='FW_WATCH_LIMIT'), 'deleted watch descriptors leaked')
+        for i in range(280): (inbox / f'new-dir-{i}').rmdir()
+
         # Queue pressure and readiness timeouts are visible; no unbounded allocation.
         write_config('rule slow when moved_to ** exec /bin/sleep 2\n')
         start('--workers', '1', '--queue-size', '2')
@@ -224,10 +261,40 @@ elif sys.argv[1] == "record":
         stop(expected=3)
         check(has('event_dropped', code='FW_WATCH_LOST'), 'watch-loss diagnostic')
         (root / 'renamed-root').rename(inbox)
+        # Real write failure (RLIMIT_FSIZE/EFBIG) must stop the daemon, not run unaudited.
+        def file_limit():
+            signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+            resource.setrlimit(resource.RLIMIT_FSIZE, (8192, 8192))
+        fault_log = root / 'fault.log'
+        fault_inbox = root / 'fault-inbox'
+        fault_inbox.mkdir()
+        fault_config = root / 'fault-config'
+        fault_config.write_text(f'watch {fault_inbox}\nwhen created ** log\n')
+        with fault_log.open('w') as output:
+            fault = subprocess.Popen([binary, 'run', '--config', str(fault_config), '--journal', str(root / 'fault.jsonl'),
+                                      '--ready-mode', 'immediate'], stdout=output, stderr=output,
+                                     preexec_fn=file_limit, restore_signals=False)
+            try:
+                deadline = time.monotonic() + 5
+                while 'fileward started' not in fault_log.read_text() and time.monotonic() < deadline:
+                    if fault.poll() is not None: break
+                    time.sleep(.02)
+                check(fault.poll() is None, fault_log.read_text())
+                for i in range(40): (fault_inbox / f'disk-failure-{i}').write_text('x')
+                check(fault.wait(timeout=5) == 3, 'audit write failure must exit 3')
+                check('FW_JOURNAL_WRITE' in fault_log.read_text(), 'missing write-failure diagnostic')
+            finally:
+                if fault.poll() is None: fault.kill(); fault.wait()
         # A partial final record is explicitly rejected on the next startup.
         with journal.open('ab') as file: file.write(b'{"unfinished":')
         result = subprocess.run([binary, 'run', '--config', str(config), '--journal', str(journal)], capture_output=True, timeout=3)
         check(result.returncode == 3 and b'FW_JOURNAL_OPEN' in result.stderr, 'partial-tail startup rejection')
+        malformed = root / 'malformed.jsonl'
+        malformed.write_text('not json\n')
+        invalid_stats = subprocess.run([binary, 'stats', '--journal', str(malformed)], capture_output=True)
+        check(invalid_stats.returncode == 3 and json.loads(invalid_stats.stdout)['malformed_records'] == 1, 'malformed query input')
+        inside = subprocess.run([binary, 'run', '--config', str(config), '--journal', str(inbox / 'audit.jsonl')], capture_output=True)
+        check(inside.returncode == 2 and b'FW_OUTPUT_INSIDE_WATCH' in inside.stderr, 'self-observation must be rejected')
     finally:
         stop()
 

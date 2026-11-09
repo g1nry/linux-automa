@@ -5,6 +5,7 @@
 #define _XOPEN_SOURCE 700
 #endif
 
+#include "daemon.h"
 #include <fileward/action.h>
 #include <fileward/config.h>
 #include <fileward/rules.h>
@@ -34,8 +35,6 @@
 
 static volatile sig_atomic_t running = 1;
 static volatile sig_atomic_t reload_requested = 0;
-static int pidfile_fd = -1;
-static int startup_fd = -1;
 
 static void handle_signal(int signal_number) {
     if (signal_number == SIGHUP) {
@@ -83,14 +82,19 @@ static event_type_t parse_event_type(const char *token) {
 }
 
 static int is_help_arg(const char *arg) {
-    return arg != NULL &&
-           (strcmp(arg, "-h") == 0 || strcmp(arg, "--help") == 0 || strcmp(arg, "help") == 0);
+    return arg != NULL && (strcmp(arg, "-h") == 0 || strcmp(arg, "--help") == 0 || strcmp(arg, "help") == 0);
 }
 
 static void print_usage(const char *program_name) {
     fprintf(stderr, "Usage: %s <subcommand> [options]\n", program_name);
-    fprintf(stderr, "       %s run [--config <file>] [--dry-run] [--daemon] [--pidfile <file>] [--log-file <file>] [--state-file <file>] [<directory_to_watch>]\n", program_name);
-    fprintf(stderr, "       %s start [--config <file>] [--dry-run] [--pidfile <file>] [--log-file <file>] [--state-file <file>] [<directory_to_watch>]\n", program_name);
+    fprintf(stderr,
+            "       %s run [--config <file>] [--dry-run] [--daemon] [--pidfile <file>] [--log-file <file>] "
+            "[--state-file <file>] [<directory_to_watch>]\n",
+            program_name);
+    fprintf(stderr,
+            "       %s start [--config <file>] [--dry-run] [--pidfile <file>] [--log-file <file>] "
+            "[--state-file <file>] [<directory_to_watch>]\n",
+            program_name);
     fprintf(stderr, "       %s stop [--pidfile <file>]\n", program_name);
     fprintf(stderr, "       %s status [--pidfile <file>]\n", program_name);
     fprintf(stderr, "       %s reload [--pidfile <file>]\n", program_name);
@@ -100,7 +104,10 @@ static void print_usage(const char *program_name) {
 }
 
 static void print_run_usage(const char *program_name) {
-    fprintf(stderr, "Usage: %s run [--config <file>] [--dry-run] [--daemon] [--pidfile <file>] [--log-file <file>] [--state-file <file>] [<directory_to_watch>]\n", program_name);
+    fprintf(stderr,
+            "Usage: %s run [--config <file>] [--dry-run] [--daemon] [--pidfile <file>] [--log-file <file>] "
+            "[--state-file <file>] [<directory_to_watch>]\n",
+            program_name);
 }
 
 static void print_test_usage(const char *program_name) {
@@ -122,8 +129,10 @@ static void print_help(const char *program_name) {
     fprintf(stderr, "  test     validate a path and show rule matches for a config\n");
     fprintf(stderr, "  validate validate config syntax without starting a watcher\n");
     fprintf(stderr, "  explain  explain which rules would match a path for an event\n");
-    fprintf(stderr, "  history  show recent action results as JSONL\n  stats    aggregate counters from the retained journal\n");
+    fprintf(stderr, "  history  show recent action results as JSONL\n  stats    aggregate counters from the "
+                    "retained journal\n");
     fprintf(stderr, "\nRuntime options: --journal <file> --journal-max-bytes <bytes> --workers 1..32\n");
+    fprintf(stderr, "  --journal-sync: fdatasync every structured record\n");
     fprintf(stderr, "  --queue-size 1..4096 --ready-mode close-write|stable|immediate\n");
     fprintf(stderr, "  --settle-ms 0..60000 --ready-timeout-ms 100..3600000\n");
     fprintf(stderr, "\nOptions:\n");
@@ -133,214 +142,15 @@ static void print_help(const char *program_name) {
     fprintf(stderr, "  --pidfile <file>   write/read the daemon pidfile\n");
     fprintf(stderr, "  --log-file <file>  redirect logs to a file\n");
     fprintf(stderr, "  --state-file <file> append handled events to a journal file\n");
-    fprintf(stderr, "  --event <event>    event type for explain: created, modified, deleted, moved_from, moved_to\n");
+    fprintf(
+        stderr,
+        "  --event <event>    event type for explain: created, modified, deleted, moved_from, moved_to\n");
     fprintf(stderr, "  The watch directory is required unless --config supplies it.\n");
     fprintf(stderr, "\nExamples:\n");
     fprintf(stderr, "  %s run --config fileward.conf\n", program_name);
     fprintf(stderr, "  %s start --daemon --config fileward.conf ~/Downloads\n", program_name);
     fprintf(stderr, "  %s test --config fileward.conf ~/Downloads/report.pdf\n", program_name);
     fprintf(stderr, "  %s explain --config fileward.conf --event created docs/report.pdf\n", program_name);
-}
-
-static int lock_pidfile(const char *pidfile_path) {
-    int fd = open(pidfile_path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
-    if (fd < 0) {
-        fprintf(stderr, "failed to open pidfile '%s': %s\n", pidfile_path, strerror(errno));
-        return -1;
-    }
-
-    if (fd <= STDERR_FILENO) {
-        int duplicate = fcntl(fd, F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
-        close(fd);
-        if (duplicate < 0) {
-            fprintf(stderr, "failed to reserve pidfile descriptor: %s\n", strerror(errno));
-            return -1;
-        }
-        fd = duplicate;
-    }
-
-    struct stat pidfile_stat;
-    if (fstat(fd, &pidfile_stat) != 0 || !S_ISREG(pidfile_stat.st_mode)) {
-        fprintf(stderr, "pidfile is not a regular file: %s\n", pidfile_path);
-        close(fd);
-        return -1;
-    }
-
-    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
-        fprintf(stderr, "fileward is already running or pidfile is locked: %s\n", pidfile_path);
-        close(fd);
-        return -1;
-    }
-
-    pidfile_fd = fd;
-    return 0;
-}
-
-static int write_pidfile(pid_t pid) {
-    if (pidfile_fd < 0) {
-        return 0;
-    }
-
-    char contents[32];
-    int len = snprintf(contents, sizeof(contents), "%ld\n", (long)pid);
-    if (len < 0 || (size_t)len >= sizeof(contents) ||
-        ftruncate(pidfile_fd, 0) != 0 || lseek(pidfile_fd, 0, SEEK_SET) < 0) {
-        fprintf(stderr, "failed to write pidfile: %s\n", strerror(errno));
-        return -1;
-    }
-
-    size_t written = 0;
-    while (written < (size_t)len) {
-        ssize_t count = write(pidfile_fd, contents + written, (size_t)len - written);
-        if (count <= 0) {
-            fprintf(stderr, "failed to write pidfile: %s\n", strerror(errno));
-            return -1;
-        }
-        written += (size_t)count;
-    }
-
-    return 0;
-}
-
-static void release_pidfile(void) {
-    if (pidfile_fd >= 0) {
-        close(pidfile_fd);
-        pidfile_fd = -1;
-    }
-}
-
-static int is_pid_running(pid_t pid);
-
-static int read_running_pid(const char *pidfile_path, pid_t *pid_out) {
-    int fd = open(pidfile_path, O_RDONLY);
-    if (fd < 0) {
-        return -1;
-    }
-
-    if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
-        close(fd);
-        return -1;
-    }
-    if (errno != EWOULDBLOCK) {
-        close(fd);
-        return -1;
-    }
-
-    FILE *fp = fdopen(fd, "r");
-    if (fp == NULL) {
-        close(fd);
-        return -1;
-    }
-    long pid_value = 0;
-    int parsed = fscanf(fp, "%ld", &pid_value);
-    fclose(fp);
-    if (parsed != 1 || pid_value <= 0) {
-        return -1;
-    }
-    *pid_out = (pid_t)pid_value;
-    return is_pid_running(*pid_out) ? 0 : -1;
-}
-
-static int is_pid_running(pid_t pid) {
-    if (pid <= 0) {
-        return 0;
-    }
-
-    return kill(pid, 0) == 0 || errno == EPERM;
-}
-
-static int redirect_output(const char *log_file_path) {
-    if (log_file_path == NULL || log_file_path[0] == '\0') {
-        int devnull = open("/dev/null", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (devnull < 0) {
-            return -1;
-        }
-        dup2(devnull, STDOUT_FILENO);
-        dup2(devnull, STDERR_FILENO);
-        close(devnull);
-        return 0;
-    }
-
-    int log_fd = open(log_file_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
-    if (log_fd < 0) {
-        return -1;
-    }
-
-    dup2(log_fd, STDOUT_FILENO);
-    dup2(log_fd, STDERR_FILENO);
-    close(log_fd);
-    return 0;
-}
-
-static int daemonize_process(const char *log_file_path) {
-    int startup_pipe[2];
-    if (pipe(startup_pipe) != 0) {
-        fprintf(stderr, "startup pipe failed: %s\n", strerror(errno));
-        return -1;
-    }
-
-    pid_t pid = fork();
-    if (pid < 0) {
-        fprintf(stderr, "fork failed: %s\n", strerror(errno));
-        close(startup_pipe[0]);
-        close(startup_pipe[1]);
-        return -1;
-    }
-
-    if (pid > 0) {
-        close(startup_pipe[1]);
-        char result = 0;
-        ssize_t received;
-        do {
-            received = read(startup_pipe[0], &result, 1);
-        } while (received < 0 && errno == EINTR);
-        close(startup_pipe[0]);
-        _exit(received == 1 && result == '1' ? EXIT_OK : EXIT_RUNTIME);
-    }
-
-    close(startup_pipe[0]);
-    startup_fd = startup_pipe[1];
-
-    if (setsid() < 0) {
-        fprintf(stderr, "setsid failed: %s\n", strerror(errno));
-        return -1;
-    }
-
-    signal(SIGHUP, SIG_IGN);
-
-    pid = fork();
-    if (pid < 0) {
-        fprintf(stderr, "second fork failed: %s\n", strerror(errno));
-        return -1;
-    }
-
-    if (pid > 0) {
-        _exit(EXIT_OK);
-    }
-
-    /* Preserve the launch directory for relative config, log and action paths. */
-
-    close(STDIN_FILENO);
-    if (redirect_output(log_file_path) != 0) {
-        fprintf(stderr, "failed to redirect output: %s\n", strerror(errno));
-        return -1;
-    }
-
-    umask(0);
-    if (write_pidfile(getpid()) != 0) {
-        return -1;
-    }
-
-    return 0;
-}
-
-static void notify_startup(int success) {
-    if (startup_fd >= 0) {
-        char result = success ? '1' : '0';
-        (void)write(startup_fd, &result, 1);
-        close(startup_fd);
-        startup_fd = -1;
-    }
 }
 
 static int expand_path(const char *path, char *out, size_t out_size) {
@@ -368,7 +178,8 @@ static int expand_path(const char *path, char *out, size_t out_size) {
     return 0;
 }
 
-static int load_watch_config(const char *config_path, const char *watch_path, config_t *config, const char **out_watch_path) {
+static int load_watch_config(const char *config_path, const char *watch_path, config_t *config,
+                             const char **out_watch_path) {
     char expanded_watch_path[PATH_MAX];
 
     if (config_path != NULL) {
@@ -415,32 +226,45 @@ static int path_within_root(const char *root, const char *target, char *relative
     /* Resolve parents, preserving the final directory entry (including symlinks).
      * This also lets explain inspect a removed file when its parent still exists. */
     char target_copy[PATH_MAX];
-    if (strlen(target) >= sizeof(target_copy) || target[0] == '\0') return -1;
+    if (strlen(target) >= sizeof(target_copy) || target[0] == '\0') {
+        return -1;
+    }
     strcpy(target_copy, target);
     size_t length = strlen(target_copy);
-    while (length > 1 && target_copy[length - 1] == '/') target_copy[--length] = '\0';
+    while (length > 1 && target_copy[length - 1] == '/') {
+        target_copy[--length] = '\0';
+    }
     char *slash = strrchr(target_copy, '/');
     const char *leaf = slash ? slash + 1 : target_copy;
     if (*leaf == '\0' || strcmp(leaf, ".") == 0 || strcmp(leaf, "..") == 0) {
-        if (realpath(target_copy, resolved_target) == NULL) return -1;
+        if (realpath(target_copy, resolved_target) == NULL) {
+            return -1;
+        }
     } else {
         char leaf_copy[PATH_MAX];
         strcpy(leaf_copy, leaf);
         const char *parent = ".";
         if (slash) {
-            if (slash == target_copy) parent = "/";
-            else {
+            if (slash == target_copy) {
+                parent = "/";
+            } else {
                 *slash = '\0';
                 parent = target_copy;
             }
         }
         char resolved_parent[PATH_MAX];
-        if (realpath(parent, resolved_parent) == NULL) return -1;
+        if (realpath(parent, resolved_parent) == NULL) {
+            return -1;
+        }
         struct stat parent_stat;
-        if (stat(resolved_parent, &parent_stat) != 0 || !S_ISDIR(parent_stat.st_mode)) return -1;
+        if (stat(resolved_parent, &parent_stat) != 0 || !S_ISDIR(parent_stat.st_mode)) {
+            return -1;
+        }
         int written = snprintf(resolved_target, sizeof(resolved_target), "%s%s%s", resolved_parent,
                                strcmp(resolved_parent, "/") == 0 ? "" : "/", leaf_copy);
-        if (written < 0 || (size_t)written >= sizeof(resolved_target)) return -1;
+        if (written < 0 || (size_t)written >= sizeof(resolved_target)) {
+            return -1;
+        }
     }
 
     size_t root_len = strlen(resolved_root);
@@ -467,7 +291,8 @@ static int path_within_root(const char *root, const char *target, char *relative
     return 1;
 }
 
-static int describe_matching_rules(const char *relative_path, event_type_t event, const config_t *config, int explain) {
+static int describe_matching_rules(const char *relative_path, event_type_t event, const config_t *config,
+                                   int explain) {
     rule_result_t filter_result = evaluate_filters(config, relative_path);
     if (filter_result != RULE_MATCH) {
         printf("path skipped: %s\n", rule_result_description(filter_result));
@@ -481,7 +306,9 @@ static int describe_matching_rules(const char *relative_path, event_type_t event
     for (int i = 0; i < config->rule_count; i++) {
         const rule_t *rule = &config->rules[order[i]];
         if (stopped) {
-            if (explain) printf("Rule %s (line %d): skipped: rule chain stopped\n", rule->name, rule->line_no);
+            if (explain) {
+                printf("Rule %s (line %d): skipped: rule chain stopped\n", rule->name, rule->line_no);
+            }
             continue;
         }
         rule_result_t result = evaluate_rule(rule, event, &input);
@@ -501,14 +328,17 @@ static int describe_matching_rules(const char *relative_path, event_type_t event
         printf("  event: %s\n", event_type_to_string(rule->event));
         printf("  pattern: %s\n", rule->path_glob);
         printf("  action: %s\n", action_type_name(rule->action.type));
-        if (rule->action.type == ACTION_MOVE || rule->action.type == ACTION_COPY || rule->action.type == ACTION_ARCHIVE) {
+        if (rule->action.type == ACTION_MOVE || rule->action.type == ACTION_COPY ||
+            rule->action.type == ACTION_ARCHIVE) {
             printf("  target: %s\n", rule->action.target);
             char preview[PATH_MAX];
-            if (action_expand_target(rule->action.target, config->watch_path, relative_path, event, preview) == 0) {
+            if (action_expand_target(rule->action.target, config->watch_path, relative_path, event,
+                                     preview) == 0) {
                 printf("  expanded target: %s\n", preview);
             }
-            printf("  conflict: %s\n  retries: %d (backoff %dms)\n", conflict_policy_name(rule->action.conflict),
-                   rule->action.retries, rule->action.backoff_ms);
+            printf("  conflict: %s\n  retries: %d (backoff %dms)\n",
+                   conflict_policy_name(rule->action.conflict), rule->action.retries,
+                   rule->action.backoff_ms);
         } else if (rule->action.type == ACTION_EXEC) {
             printf("  command: %s\n  timeout: %ds\n", rule->action.command, rule->action.timeout_seconds);
         } else if (rule->action.type == ACTION_LOG && rule->action.message[0] != '\0') {
@@ -516,11 +346,22 @@ static int describe_matching_rules(const char *relative_path, event_type_t event
         }
         if (config->first_match || rule->stop) {
             stopped = 1;
-            if (explain) printf("  stops rule chain\n");
+            if (explain) {
+                printf("  stops rule chain\n");
+            }
         }
     }
 
     return matched;
+}
+
+static int canonical_config_root(config_t *config) {
+    char root[PATH_MAX];
+    if (!realpath(config->watch_path, root)) {
+        return -1;
+    }
+    snprintf(config->watch_path, sizeof(config->watch_path), "%s", root);
+    return 0;
 }
 
 static int run_command(int argc, char *argv[], int daemon_mode) {
@@ -532,7 +373,7 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
     int dry_run = 0;
     config_t config;
     runtime_t *runtime = NULL;
-    runtime_options_t options = {.workers=4, .capacity=256, .settle_ms=100, .ready_timeout_ms=300000};
+    runtime_options_t options = {.workers = 4, .capacity = 256, .settle_ms = 100, .ready_timeout_ms = 300000};
     char journal_default[PATH_MAX];
     const char *journal_path = NULL;
     int journal_sync = 0;
@@ -540,7 +381,6 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
     const char *watch_root = NULL;
 
     memset(&config, 0, sizeof(config));
-
 
     for (int i = 0; i < argc; i++) {
         if (is_help_arg(argv[i])) {
@@ -579,27 +419,62 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
         } else if (strcmp(argv[i], "--journal-sync") == 0) {
             journal_sync = 1;
         } else if (strcmp(argv[i], "--journal") == 0) {
-            if (++i >= argc) return EXIT_USAGE;
+            if (++i >= argc) {
+                return EXIT_USAGE;
+            }
             journal_path = argv[i];
         } else if (strcmp(argv[i], "--ready-mode") == 0) {
-            if (++i >= argc) return EXIT_USAGE;
-            if (strcmp(argv[i], "close-write") == 0) options.ready_mode = 0;
-            else if (strcmp(argv[i], "stable") == 0) options.ready_mode = 1;
-            else if (strcmp(argv[i], "immediate") == 0) options.ready_mode = 2;
-            else return EXIT_USAGE;
+            if (++i >= argc) {
+                return EXIT_USAGE;
+            }
+            if (strcmp(argv[i], "close-write") == 0) {
+                options.ready_mode = 0;
+            } else if (strcmp(argv[i], "stable") == 0) {
+                options.ready_mode = 1;
+            } else if (strcmp(argv[i], "immediate") == 0) {
+                options.ready_mode = 2;
+            } else {
+                return EXIT_USAGE;
+            }
         } else if (strcmp(argv[i], "--workers") == 0 || strcmp(argv[i], "--queue-size") == 0 ||
                    strcmp(argv[i], "--settle-ms") == 0 || strcmp(argv[i], "--ready-timeout-ms") == 0 ||
                    strcmp(argv[i], "--journal-max-bytes") == 0) {
             const char *option = argv[i];
-            if (++i >= argc || argv[i][0] < '0' || argv[i][0] > '9') return EXIT_USAGE;
-            char *end; errno = 0;
+            if (++i >= argc || argv[i][0] < '0' || argv[i][0] > '9') {
+                return EXIT_USAGE;
+            }
+            char *end;
+            errno = 0;
             unsigned long long number = strtoull(argv[i], &end, 10);
-            if (errno || *end) return EXIT_USAGE;
-            if (strcmp(option, "--workers") == 0) { if (number < 1 || number > 32) return EXIT_USAGE; options.workers = number; }
-            else if (strcmp(option, "--queue-size") == 0) { if (number < 1 || number > 4096) return EXIT_USAGE; options.capacity = number; }
-            else if (strcmp(option, "--settle-ms") == 0) { if (number > 60000) return EXIT_USAGE; options.settle_ms = number; }
-            else if (strcmp(option, "--ready-timeout-ms") == 0) { if (number < 100 || number > 3600000) return EXIT_USAGE; options.ready_timeout_ms = number; }
-            else { if (number < 4096 || number > 4294967296ULL) return EXIT_USAGE; journal_limit = number; }
+            if (errno || *end) {
+                return EXIT_USAGE;
+            }
+            if (strcmp(option, "--workers") == 0) {
+                if (number < 1 || number > 32) {
+                    return EXIT_USAGE;
+                }
+                options.workers = number;
+            } else if (strcmp(option, "--queue-size") == 0) {
+                if (number < 1 || number > 4096) {
+                    return EXIT_USAGE;
+                }
+                options.capacity = number;
+            } else if (strcmp(option, "--settle-ms") == 0) {
+                if (number > 60000) {
+                    return EXIT_USAGE;
+                }
+                options.settle_ms = number;
+            } else if (strcmp(option, "--ready-timeout-ms") == 0) {
+                if (number < 100 || number > 3600000) {
+                    return EXIT_USAGE;
+                }
+                options.ready_timeout_ms = number;
+            } else {
+                if (number < 4096 || number > 4294967296ULL) {
+                    return EXIT_USAGE;
+                }
+                journal_limit = number;
+            }
         } else if (watch_path == NULL) {
             watch_path = argv[i];
         } else {
@@ -608,13 +483,20 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
         }
     }
 
-    if (options.ready_timeout_ms <= options.settle_ms) return EXIT_USAGE;
+    if (options.ready_timeout_ms <= options.settle_ms) {
+        return EXIT_USAGE;
+    }
     if (!journal_path) {
         const char *state_home = getenv("XDG_STATE_HOME");
         const char *home = getenv("HOME");
-        int size = state_home && *state_home ? snprintf(journal_default, sizeof(journal_default), "%s/fileward/events.jsonl", state_home) :
-                   snprintf(journal_default, sizeof(journal_default), "%s/.local/state/fileward/events.jsonl", home ? home : ".");
-        if (size < 0 || size >= (int)sizeof(journal_default)) return EXIT_USAGE;
+        int size =
+            state_home && *state_home
+                ? snprintf(journal_default, sizeof(journal_default), "%s/fileward/events.jsonl", state_home)
+                : snprintf(journal_default, sizeof(journal_default), "%s/.local/state/fileward/events.jsonl",
+                           home ? home : ".");
+        if (size < 0 || size >= (int)sizeof(journal_default)) {
+            return EXIT_USAGE;
+        }
         journal_path = journal_default;
     }
     audit_set_sync(journal_sync);
@@ -625,16 +507,25 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
     if (load_watch_config(config_path, watch_path, &config, &watch_root) != 0) {
         fprintf(stderr, "Failed to load watch configuration.\n");
         audit_emit("config_load", "failure", "FW_CONFIG_INVALID", 0, "configuration rejected", 0, 0, NULL);
-        audit_close(); return EXIT_CONFIG;
+        audit_close();
+        return EXIT_CONFIG;
     }
 
+    if (canonical_config_root(&config)) {
+        audit_emit("watcher_error", "failure", "FW_WATCHER_START", errno, "watch root cannot be resolved", 0,
+                   0, NULL);
+        audit_close();
+        return EXIT_RUNTIME;
+    }
     const char *artifacts[] = {journal_path, state_file_path, log_file_path};
-    for (unsigned i = 0; i < sizeof(artifacts)/sizeof(artifacts[0]); i++) {
+    for (unsigned i = 0; i < sizeof(artifacts) / sizeof(artifacts[0]); i++) {
         char relative[PATH_MAX];
         if (artifacts[i] && path_within_root(watch_root, artifacts[i], relative, sizeof(relative)) == 1) {
-            audit_emit("config_load", "failure", "FW_OUTPUT_INSIDE_WATCH", 0, "journal/log/state must be outside the watched tree", 0, 0, NULL);
+            audit_emit("config_load", "failure", "FW_OUTPUT_INSIDE_WATCH", 0,
+                       "journal/log/state must be outside the watched tree", 0, 0, NULL);
             fprintf(stderr, "FW_OUTPUT_INSIDE_WATCH: %s\n", artifacts[i]);
-            audit_close(); return EXIT_CONFIG;
+            audit_close();
+            return EXIT_CONFIG;
         }
     }
     if (!daemon_mode && log_file_path != NULL && redirect_output(log_file_path) != 0) {
@@ -665,9 +556,9 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
     signal(SIGTERM, handle_signal);
     signal(SIGHUP, handle_signal);
 
-
     if (start_watcher(watch_root) != 0) {
-        audit_emit("watcher_error", "failure", "FW_WATCHER_START", errno, "watch root could not be initialized", 0, 0, NULL);
+        audit_emit("watcher_error", "failure", "FW_WATCHER_START", errno,
+                   "watch root could not be initialized", 0, 0, NULL);
         audit_close();
         notify_startup(0);
         release_pidfile();
@@ -678,51 +569,74 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
     options.state_file = state_file_path;
     runtime = runtime_create(&config, &options);
     if (!runtime) {
-        audit_emit("runtime_error", "failure", "FW_WORKER_START", errno, "worker pool could not start", 0, 0, NULL);
-        stop_watcher(); notify_startup(0); release_pidfile(); audit_close(); return EXIT_RUNTIME;
+        audit_emit("runtime_error", "failure", "FW_WORKER_START", errno, "worker pool could not start", 0, 0,
+                   NULL);
+        stop_watcher();
+        notify_startup(0);
+        release_pidfile();
+        audit_close();
+        return EXIT_RUNTIME;
     }
     audit_context(config.watch_path, "", "", 1, dry_run, NULL);
     audit_emit("daemon_started", "success", "FW_OK", 0, "watcher and workers ready", 0, 0, NULL);
     if (audit_failed()) {
-        runtime_destroy(runtime); stop_watcher(); notify_startup(0); audit_close(); release_pidfile(); return EXIT_RUNTIME;
+        runtime_destroy(runtime);
+        stop_watcher();
+        notify_startup(0);
+        audit_close();
+        release_pidfile();
+        return EXIT_RUNTIME;
     }
     notify_startup(1);
     log_info("fileward started. Press Ctrl+C to stop.%s", dry_run ? " (dry-run mode)" : "");
     int result = EXIT_OK;
     unsigned generation = 1;
     while (running) {
-        if (audit_failed()) { result = EXIT_RUNTIME; break; }
+        if (audit_failed()) {
+            result = EXIT_RUNTIME;
+            break;
+        }
         if (reload_requested && config_path != NULL) {
             reload_requested = 0;
             config_t new_config;
             const char *new_watch_root = NULL;
             audit_context(config.watch_path, "", "", generation, dry_run, NULL);
             if (load_watch_config(config_path, watch_path, &new_config, &new_watch_root) != 0 ||
+                canonical_config_root(&new_config) != 0 ||
                 strcmp(new_config.watch_path, config.watch_path) != 0) {
                 log_error("failed to reload config: %s; keeping previous rules", config_path);
-                audit_emit("config_reload", "failure", "FW_RELOAD_REJECTED", 0, "invalid configuration or changed watch root", 0, 0, NULL);
+                audit_emit("config_reload", "failure", "FW_RELOAD_REJECTED", 0,
+                           "invalid configuration or changed watch root", 0, 0, NULL);
             } else if (runtime_reload(runtime, &new_config)) {
-                audit_emit("config_reload", "failure", "FW_MEMORY_LIMIT", ENOMEM, "keeping previous rules", 0, 0, NULL);
+                audit_emit("config_reload", "failure", "FW_MEMORY_LIMIT", ENOMEM, "keeping previous rules", 0,
+                           0, NULL);
             } else {
-                config = new_config; generation++;
+                config = new_config;
+                generation++;
                 audit_context(config.watch_path, "", "", generation, dry_run, NULL);
-                audit_emit("config_reload", "success", "FW_OK", 0, "new immutable configuration published", 0, 0, NULL);
+                audit_emit("config_reload", "success", "FW_OK", 0, "new immutable configuration published", 0,
+                           0, NULL);
                 log_info("reloaded config: %s", config_path);
             }
         }
         if (watcher_process_events(50, runtime_observe, runtime) != 0) {
-            audit_emit("watcher_error", "failure", "FW_WATCHER_IO", errno, "watcher stopped after an error", 0, 0, NULL);
-            result = EXIT_RUNTIME; break;
+            audit_emit("watcher_error", "failure", "FW_WATCHER_IO", errno, "watcher stopped after an error",
+                       0, 0, NULL);
+            result = EXIT_RUNTIME;
+            break;
         }
         runtime_tick(runtime);
     }
     runtime_destroy(runtime);
     audit_context(config.watch_path, "", "", generation, dry_run, NULL);
     stop_watcher();
-    audit_emit("daemon_stopped", result ? "failure" : "success", result ? "FW_RUNTIME_FAILED" : "FW_OK", 0, "workers joined and pending jobs cancelled", 0, 0, NULL);
+    audit_emit("daemon_stopped", result ? "failure" : "success", result ? "FW_RUNTIME_FAILED" : "FW_OK", 0,
+               "workers joined and pending jobs cancelled", 0, 0, NULL);
     log_info("fileward stopped.");
     audit_close();
-    if (audit_failed()) result = EXIT_RUNTIME;
+    if (audit_failed()) {
+        result = EXIT_RUNTIME;
+    }
     release_pidfile();
     return result;
 }
@@ -876,6 +790,9 @@ static int test_command(int argc, char *argv[]) {
     if (load_config(config_path, &config) != 0) {
         return EXIT_CONFIG;
     }
+    if (canonical_config_root(&config)) {
+        return EXIT_RUNTIME;
+    }
     watch_root = config.watch_path;
 
     char relative[PATH_MAX];
@@ -941,6 +858,9 @@ static int explain_command(int argc, char *argv[]) {
     if (load_config(config_path, &config) != 0) {
         return EXIT_CONFIG;
     }
+    if (canonical_config_root(&config)) {
+        return EXIT_RUNTIME;
+    }
     watch_root = config.watch_path;
 
     event_type_t event = parse_event_type(event_token);
@@ -991,30 +911,48 @@ static int validate_command(int argc, char *argv[]) {
     for (int i = 0; i < config.rule_count; i++) {
         enabled += config.rules[i].enabled;
     }
-    printf("config valid: %s\nwatch root: %s\nrules: %d (%d enabled, %d disabled)\nmode: %s\npath filters: %d\n",
-           argv[1], config.watch_path, config.rule_count, enabled, config.rule_count - enabled,
-           config.first_match ? "first" : "all", config.filter_count);
+    printf(
+        "config valid: %s\nwatch root: %s\nrules: %d (%d enabled, %d disabled)\nmode: %s\npath filters: %d\n",
+        argv[1], config.watch_path, config.rule_count, enabled, config.rule_count - enabled,
+        config.first_match ? "first" : "all", config.filter_count);
     return EXIT_OK;
 }
 
 static int journal_command(int argc, char **argv, int stats) {
     char default_path[PATH_MAX];
     const char *base = getenv("XDG_STATE_HOME");
-    int written = base && *base ? snprintf(default_path, sizeof(default_path), "%s/fileward/events.jsonl", base) :
-                  snprintf(default_path, sizeof(default_path), "%s/.local/state/fileward/events.jsonl", getenv("HOME") ? getenv("HOME") : ".");
-    if (written < 0 || written >= (int)sizeof(default_path)) return EXIT_USAGE;
+    int written = base && *base
+                      ? snprintf(default_path, sizeof(default_path), "%s/fileward/events.jsonl", base)
+                      : snprintf(default_path, sizeof(default_path), "%s/.local/state/fileward/events.jsonl",
+                                 getenv("HOME") ? getenv("HOME") : ".");
+    if (written < 0 || written >= (int)sizeof(default_path)) {
+        return EXIT_USAGE;
+    }
     const char *path = default_path, *id = NULL;
-    unsigned limit = 50; int all = 0;
-    for (int i=0; i<argc; i++) {
-        if (is_help_arg(argv[i])) { printf("Usage: fileward %s [--journal <file>] [--limit 1..1000] [--all] [--event-id <id>]\n", stats ? "stats" : "history"); return 0; }
-        if (strcmp(argv[i], "--journal") == 0 && i+1<argc) path = argv[++i];
-        else if (!stats && strcmp(argv[i], "--all") == 0) all = 1;
-        else if (!stats && strcmp(argv[i], "--event-id") == 0 && i+1<argc) id = argv[++i];
-        else if (!stats && strcmp(argv[i], "--limit") == 0 && i+1<argc) {
-            char *end; unsigned long n = strtoul(argv[++i], &end, 10);
-            if (*end || !n || n>1000) return EXIT_USAGE;
+    unsigned limit = 50;
+    int all = 0;
+    for (int i = 0; i < argc; i++) {
+        if (is_help_arg(argv[i])) {
+            printf("Usage: fileward %s [--journal <file>] [--limit 1..1000] [--all] [--event-id <id>]\n",
+                   stats ? "stats" : "history");
+            return 0;
+        }
+        if (strcmp(argv[i], "--journal") == 0 && i + 1 < argc) {
+            path = argv[++i];
+        } else if (!stats && strcmp(argv[i], "--all") == 0) {
+            all = 1;
+        } else if (!stats && strcmp(argv[i], "--event-id") == 0 && i + 1 < argc) {
+            id = argv[++i];
+        } else if (!stats && strcmp(argv[i], "--limit") == 0 && i + 1 < argc) {
+            char *end;
+            unsigned long n = strtoul(argv[++i], &end, 10);
+            if (*end || !n || n > 1000) {
+                return EXIT_USAGE;
+            }
             limit = n;
-        } else return EXIT_USAGE;
+        } else {
+            return EXIT_USAGE;
+        }
     }
     return audit_query(path, stats, all, limit, id);
 }
@@ -1026,7 +964,9 @@ int main(int argc, char *argv[]) {
     }
 
     const char *command = argv[1];
-    if (strcmp(command, "history") == 0 || strcmp(command, "stats") == 0) return journal_command(argc-2, argv+2, strcmp(command, "stats") == 0);
+    if (strcmp(command, "history") == 0 || strcmp(command, "stats") == 0) {
+        return journal_command(argc - 2, argv + 2, strcmp(command, "stats") == 0);
+    }
     if (strcmp(command, "run") == 0) {
         return run_command(argc - 2, argv + 2, 0);
     }

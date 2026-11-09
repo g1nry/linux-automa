@@ -14,6 +14,8 @@ record = {'provider': 'fileward', 'schema_version': 1, 'event_id': 'run-1', 'par
           'host_id': 'host', 'kind': 'action_result', 'outcome': 'failure', 'code': 'FW_EXEC_EXIT'}
 assert module.normalize({'data': record})['dedup_key'] == 'fileward:host:run-1'
 assert module.normalize(record)['source_event_id'] == 'run-0'
+assert module.normalize(dict(record, dry_run='false'))['dry_run'] is False
+assert module.normalize(dict(record, dry_run='true'))['dry_run'] is True
 for payload in ([], {}, {'data': {}}, dict(record, schema_version=2), dict(record, kind='diagnostic')):
     try:
         module.normalize(payload)
