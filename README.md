@@ -194,11 +194,11 @@ make check
 Проверки reload, log-file, блокировки pidfile, start/stop и state-file:
 
 ```bash
-bash tests/service-smoke.sh
-bash tests/daemon-smoke.sh
-bash tests/rules-smoke.sh
-bash tests/rules-v07-smoke.sh
-python3 tests/actions-smoke.py
+bash tests/integration/service-smoke.sh
+bash tests/integration/daemon-smoke.sh
+bash tests/integration/rules-smoke.sh
+bash tests/integration/rules-v07-smoke.sh
+python3 tests/integration/actions-smoke.py
 ```
 
 Эти проверки также запускаются в GitHub Actions на Ubuntu при push и pull request. Они проверяют сам процесс; установку и запуск unit-файлов под systemd нужно проверять отдельно.
@@ -286,7 +286,7 @@ sudo systemctl disable --now "fileward@$USER.service"
 Для быстрой проверки компиляции:
 
 ```bash
-cc -std=c11 -Wall -Wextra -Isrc -Iinclude src/main.c src/watcher.c src/log.c src/config.c src/action.c src/template.c src/glob.c src/rules.c -lz -o /tmp/fileward
+cc -std=c11 -Wall -Wextra -Isrc -Iinclude src/app/main.c src/watcher/inotify.c src/observability/log.c src/core/config.c src/actions/action.c src/actions/template.c src/core/glob.c src/core/rules.c -lz -o /tmp/fileward
 ```
 
 Запуск:

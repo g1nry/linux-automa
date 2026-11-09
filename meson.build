@@ -7,29 +7,29 @@ inc = include_directories('include')
 zlib = dependency('zlib')
 
 executable('fileward',
-           'src/main.c',
-           'src/watcher.c',
-           'src/log.c',
-           'src/config.c',
-           'src/action.c',
-           'src/template.c',
-           'src/glob.c',
-           'src/rules.c',
+           'src/app/main.c',
+           'src/watcher/inotify.c',
+           'src/observability/log.c',
+           'src/core/config.c',
+           'src/actions/action.c',
+           'src/actions/template.c',
+           'src/core/glob.c',
+           'src/core/rules.c',
            include_directories: inc,
            dependencies: zlib,
            install: true)
 
 rule_tests = executable('rules-test',
-                        'tests/rules-test.c', 'src/config.c', 'src/rules.c',
-                        'src/glob.c', 'src/log.c', 'src/template.c',
+                        'tests/unit/rules-test.c', 'src/core/config.c', 'src/core/rules.c',
+                        'src/core/glob.c', 'src/observability/log.c', 'src/actions/template.c',
                         include_directories: inc)
 test('rules', rule_tests)
 
-glob_tests = executable('glob-test', 'tests/glob-test.c', 'src/glob.c',
+glob_tests = executable('glob-test', 'tests/unit/glob-test.c', 'src/core/glob.c',
                         include_directories: inc)
 test('glob', glob_tests)
 
-action_tests = executable('actions-test', 'tests/actions-test.c', 'src/action.c',
-                          'src/template.c', 'src/log.c', include_directories: inc,
+action_tests = executable('actions-test', 'tests/unit/actions-test.c', 'src/actions/action.c',
+                          'src/actions/template.c', 'src/observability/log.c', include_directories: inc,
                           dependencies: zlib, link_args: ['-Wl,--wrap=renameat2', '-Wl,--wrap=read', '-Wl,--wrap=write'])
 test('actions', action_tests)
