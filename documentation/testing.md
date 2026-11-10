@@ -88,7 +88,7 @@ meson test -C build-tsan --print-errorlogs
 python3 tests/integration/control-smoke.py ./build-tsan/fileward
 ```
 
-## Проверки ветки 1.1
+## Проверки 1.1
 
 `runtime-test` задерживает настоящий вызов получения метаданных через link-wrapper
 lstat/lstat64 и проверяет, что другой поток может получить runtime_status,
@@ -107,3 +107,12 @@ lstat/lstat64 и проверяет, что другой поток может �
 `meson test -C build-release --print-errorlogs` и сценарии saved/observability
 с `./build-release/fileward`. Assert в этом профиле не отключён, поэтому
 проверки с побочными эффектами внутри assert продолжают выполняться.
+
+`audit-test` дополнительно проверяет повтор write после EINTR, короткие записи,
+сохранение errno, максимальную длину сериализованной строки и отказ превышения
+без частичного добавления. `journal-boundary.py` проверяет history/stats на полной
+записи в 128 KiB и на превышении предела. Оба сценария входят в обычные проверки;
+граничный reader также выполняется в release и sanitizer jobs CI.
+
+Справка stop/status/reload/health доступна через --help и возвращает код 0.
+`make check` использует уникальный временный файл с удалением при завершении.
