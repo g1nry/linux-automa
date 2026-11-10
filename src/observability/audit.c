@@ -15,11 +15,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdarg.h>
 
 #ifndef FILEWARD_VERSION
 #define FILEWARD_VERSION "unknown"
 #endif
-#define LINE_SIZE 131072
+#define LINE_SIZE AUDIT_RECORD_MAX
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 static int output = -1, lock_fd = -1, sync_records;
 void audit_set_sync(int enabled) {
@@ -256,35 +257,96 @@ static int utf8_length(const unsigned char *p) {
     }
     return length;
 }
-static void string(FILE *file, const char *value) {
-    fputc('"', file);
-    for (const unsigned char *p = (const unsigned char *)value; *p;) {
+/* One bounded record, owned by the journal mutex. No per-record allocation. */
+typedef struct {
+    char *data;
+    size_t length;
+    int broken;
+} json_buffer_t;
+static void bytes(json_buffer_t *buffer, const void *data, size_t length) {
+    if (buffer->broken) {
+        return;
+    }
+    if (length > LINE_SIZE - buffer->length) {
+        buffer->broken = 1;
+        return;
+    }
+    memcpy(buffer->data + buffer->length, data, length);
+    buffer->length += length;
+}
+static void raw(json_buffer_t *buffer, const char *text) {
+    bytes(buffer, text, strlen(text));
+}
+static void format(json_buffer_t *buffer, const char *text, ...) __attribute__((format(printf, 2, 3)));
+static void format(json_buffer_t *buffer, const char *text, ...) {
+    if (buffer->broken) {
+        return;
+    }
+    va_list arguments;
+    va_start(arguments, text);
+    int count = vsnprintf(buffer->data + buffer->length, LINE_SIZE + 1 - buffer->length, text, arguments);
+    va_end(arguments);
+    if (count < 0 || (size_t)count > LINE_SIZE - buffer->length) {
+        buffer->broken = 1;
+    } else {
+        buffer->length += (size_t)count;
+    }
+}
+static void string(json_buffer_t *buffer, const char *value) {
+    static const char hex[] = "0123456789abcdef";
+    raw(buffer, "\"");
+    for (const unsigned char *p = (const unsigned char *)value; *p && !buffer->broken;) {
+        const unsigned char *start = p;
+        while (*p >= 32 && *p < 128 && *p != '"' && *p != '\\') {
+            p++;
+        }
+        bytes(buffer, start, (size_t)(p - start));
+        if (!*p) {
+            break;
+        }
         if (*p == '"' || *p == '\\') {
-            fputc('\\', file);
-            fputc(*p++, file);
+            char escaped[] = {'\\', (char)*p++};
+            bytes(buffer, escaped, sizeof(escaped));
         } else if (*p < 32) {
-            fprintf(file, "\\u%04x", *p++);
+            char escaped[] = {'\\', 'u', '0', '0', hex[*p >> 4], hex[*p & 15]};
+            bytes(buffer, escaped, sizeof(escaped));
+            p++;
         } else {
             int length = utf8_length(p);
             if (!length) {
-                fputs("\\ufffd", file);
+                raw(buffer, "\\ufffd");
                 p++;
             } else {
-                fwrite(p, 1, (size_t)length, file);
+                bytes(buffer, p, (size_t)length);
                 p += length;
             }
         }
     }
-    fputc('"', file);
+    raw(buffer, "\"");
 }
-static void field(FILE *file, const char *key, const char *value) {
-    fprintf(file, ",\"%s\":", key);
-    string(file, value ? value : "");
+static void field(json_buffer_t *buffer, const char *key, const char *value) {
+    raw(buffer, ",\"");
+    raw(buffer, key);
+    raw(buffer, "\":");
+    string(buffer, value ? value : "");
 }
-static void base64(FILE *file, const unsigned char *value) {
+static void base64(json_buffer_t *buffer, const unsigned char *value) {
     static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     size_t length = strlen((const char *)value);
-    fputc('"', file);
+    if (buffer->broken) {
+        return;
+    }
+    if (length > LINE_SIZE / 4 * 3) {
+        buffer->broken = 1;
+        return;
+    }
+    size_t encoded = 4 * ((length + 2) / 3) + 2;
+    if (encoded > LINE_SIZE - buffer->length) {
+        buffer->broken = 1;
+        return;
+    }
+    char *out = buffer->data + buffer->length;
+    *out++ = '"';
     for (size_t i = 0; i < length; i += 3) {
         unsigned bits = (unsigned)value[i] << 16;
         if (i + 1 < length) {
@@ -293,12 +355,13 @@ static void base64(FILE *file, const unsigned char *value) {
         if (i + 2 < length) {
             bits |= value[i + 2];
         }
-        fputc(alphabet[(bits >> 18) & 63], file);
-        fputc(alphabet[(bits >> 12) & 63], file);
-        fputc(i + 1 < length ? alphabet[(bits >> 6) & 63] : '=', file);
-        fputc(i + 2 < length ? alphabet[bits & 63] : '=', file);
+        *out++ = alphabet[(bits >> 18) & 63];
+        *out++ = alphabet[(bits >> 12) & 63];
+        *out++ = i + 1 < length ? alphabet[(bits >> 6) & 63] : '=';
+        *out++ = i + 2 < length ? alphabet[bits & 63] : '=';
     }
-    fputc('"', file);
+    *out = '"';
+    buffer->length += encoded;
 }
 
 static int rotate(size_t length) {
@@ -351,18 +414,14 @@ void audit_emit(const char *kind, const char *outcome, const char *code, int err
     if (id) {
         snprintf(id, AUDIT_ID_SIZE, "%s", event_id);
     }
-    char *line = NULL;
-    size_t length = 0;
-    FILE *file = open_memstream(&line, &length);
-    if (!file) {
-        atomic_store(&failed, 1);
-        goto finish;
-    }
-    fprintf(file, "{\"schema_version\":1,\"sequence\":%llu,\"timestamp\":\"%s.%03ldZ\"",
-            (unsigned long long)sequence, timestamp, now.tv_nsec / 1000000);
+    static char line[LINE_SIZE + 1];
+    json_buffer_t record = {.data = line};
+    json_buffer_t *file = &record;
+    format(file, "{\"schema_version\":1,\"sequence\":%llu,\"timestamp\":\"%s.%03ldZ\"",
+           (unsigned long long)sequence, timestamp, now.tv_nsec / 1000000);
     field(file, "provider", "fileward");
     field(file, "program_version", FILEWARD_VERSION);
-    fprintf(file, ",\"daemon_pid\":%ld", (long)getpid());
+    format(file, ",\"daemon_pid\":%ld", (long)getpid());
     field(file, "event_id", event_id);
     field(file, "run_id", run_id);
     field(file, "parent_id", context.parent);
@@ -374,31 +433,27 @@ void audit_emit(const char *kind, const char *outcome, const char *code, int err
     field(file, "event_type", context.event);
     field(file, "watch_root", context.root);
     field(file, "relative_path", context.path);
-    fputs(",\"path_base64\":", file);
+    raw(file, ",\"path_base64\":");
     base64(file, (const unsigned char *)context.path);
     field(file, "rule_name", context.rule);
     field(file, "action", context.action);
     field(file, "message", message);
     field(file, "destination", context.destination);
-    fputs(",\"destination_base64\":", file);
+    raw(file, ",\"destination_base64\":");
     base64(file, (const unsigned char *)context.destination);
     if (context.metadata_valid) {
-        fprintf(file, ",\"file_size\":%lld,\"file_mode\":%u,\"mtime_unix\":%lld",
-                (long long)context.metadata.st_size, (unsigned)context.metadata.st_mode,
-                (long long)context.metadata.st_mtime);
+        format(file, ",\"file_size\":%lld,\"file_mode\":%u,\"mtime_unix\":%lld",
+               (long long)context.metadata.st_size, (unsigned)context.metadata.st_mode,
+               (long long)context.metadata.st_mtime);
     } else {
-        fputs(",\"file_size\":null,\"file_mode\":null,\"mtime_unix\":null", file);
+        raw(file, ",\"file_size\":null,\"file_mode\":null,\"mtime_unix\":null");
     }
-    fprintf(file, ",\"exit_code\":%d,\"signal\":%d", context.exit_code, context.signal);
-    fprintf(file,
-            ",\"errno\":%d,\"attempt\":%d,\"duration_ms\":%lld,\"config_generation\":%u,\"dry_run\":%s}\n",
-            error, attempt, duration_ms, context.generation, context.dry_run ? "true" : "false");
-    int broken = ferror(file);
-    if (fclose(file)) {
-        broken = 1;
-    }
-    if (broken || length > LINE_SIZE || rotate(length)) {
-        free(line);
+    format(file, ",\"exit_code\":%d,\"signal\":%d", context.exit_code, context.signal);
+    format(file,
+           ",\"errno\":%d,\"attempt\":%d,\"duration_ms\":%lld,\"config_generation\":%u,\"dry_run\":%s}\n",
+           error, attempt, duration_ms, context.generation, context.dry_run ? "true" : "false");
+    size_t length = record.length;
+    if (record.broken || rotate(length)) {
         atomic_store(&failed, 1);
         goto finish;
     }
@@ -414,7 +469,6 @@ void audit_emit(const char *kind, const char *outcome, const char *code, int err
         }
         done += (size_t)count;
     }
-    free(line);
     if (!atomic_load(&failed) && sync_records && fdatasync(output)) {
         atomic_store(&failed, 1);
     }
