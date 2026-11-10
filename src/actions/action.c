@@ -275,7 +275,7 @@ static int stream_file(int source, int destination, off_t length, int compress) 
 }
 
 static int copy_or_archive(const char *source, const char *directory, const char *destination,
-                           const action_t *action, int remove_source) {
+                           const action_t *action) {
     int input = open(source, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
     if (input < 0) {
         return -1;
@@ -336,26 +336,7 @@ static int copy_or_archive(const char *source, const char *directory, const char
     if (result != 0) {
         goto done;
     }
-    if (remove_source) {
-        /* Never remove a replacement that arrived while the file was copied. */
-        if (lstat(source, &after) != 0 || !source_unchanged(&before, &after)) {
-            errno = ESTALE;
-            result = -1;
-            log_error("copy published at '%s', but source changed; source retained", actual);
-            goto done;
-        }
-        if (unlink(source) != 0) {
-            result = -1;
-            log_error("copy published at '%s', but source could not be removed: %s", actual, strerror(errno));
-            errno = EIO; /* Publication already happened: never retry the entire action. */
-            goto done;
-        }
-    }
-    log_info("%s '%s' -> '%s'",
-             remove_source                    ? "moved"
-             : action->type == ACTION_ARCHIVE ? "archived"
-                                              : "copied",
-             source, actual);
+    log_info("%s '%s' -> '%s'", action->type == ACTION_ARCHIVE ? "archived" : "copied", source, actual);
 done: {
     int saved = errno;
     if (output >= 0) {
@@ -559,12 +540,9 @@ static int file_action(const action_t *action, const char *source, const char *d
         if (result == 0) {
             log_info("moved '%s' -> '%s'", source, actual);
         }
-        if (result >= 0 || errno != EXDEV) {
-            return result;
-        }
-        return copy_or_archive(source, directory, destination, action, 1);
+        return result;
     }
-    return copy_or_archive(source, directory, destination, action, 0);
+    return copy_or_archive(source, directory, destination, action);
 }
 
 int action_handle_log(const action_t *action, const char *watch_path, const char *filename,
@@ -573,7 +551,8 @@ int action_handle_log(const action_t *action, const char *watch_path, const char
         log_info("%s: %s", dry_run ? "dry-run: would log" : "action log", action->message);
     } else {
         log_info("%s: %s %s/%s", dry_run ? "dry-run: would log" : "action log",
-                 event == EVENT_DELETED      ? "deleted"
+                 event == EVENT_SAVED        ? "saved"
+                 : event == EVENT_DELETED    ? "deleted"
                  : event == EVENT_MODIFIED   ? "modified"
                  : event == EVENT_MOVED_TO   ? "moved_to"
                  : event == EVENT_MOVED_FROM ? "moved_from"

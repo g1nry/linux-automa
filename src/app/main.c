@@ -52,6 +52,8 @@ static void handle_signal(int signal_number) {
 
 static const char *event_type_to_string(event_type_t type) {
     switch (type) {
+    case EVENT_SAVED:
+        return "saved";
     case EVENT_CREATED:
         return "created";
     case EVENT_MODIFIED:
@@ -68,6 +70,9 @@ static const char *event_type_to_string(event_type_t type) {
 }
 
 static event_type_t parse_event_type(const char *token) {
+    if (strcmp(token, "saved") == 0) {
+        return EVENT_SAVED;
+    }
     if (strcmp(token, "created") == 0) {
         return EVENT_CREATED;
     }
@@ -150,9 +155,8 @@ static void print_help(const char *program_name) {
     fprintf(stderr, "  --pidfile <file>   write/read the daemon pidfile\n");
     fprintf(stderr, "  --log-file <file>  redirect logs to a file\n");
     fprintf(stderr, "  --state-file <file> append handled events to a journal file\n");
-    fprintf(
-        stderr,
-        "  --event <event>    event type for explain: created, modified, deleted, moved_from, moved_to\n");
+    fprintf(stderr, "  --event <event>    event type for explain: created, modified, saved, deleted, "
+                    "moved_from, moved_to\n");
     fprintf(stderr, "  The watch directory is required unless --config supplies it.\n");
     fprintf(stderr, "\nExamples:\n");
     fprintf(stderr, "  %s run --config fileward.conf\n", program_name);

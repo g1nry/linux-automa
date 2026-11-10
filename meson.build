@@ -1,5 +1,5 @@
 project('fileward', 'c',
-        version: '1.0.0',
+        version: '1.1.0-dev',
         license: 'MIT',
         default_options: ['warning_level=3', 'c_std=c11'])
 
@@ -48,3 +48,11 @@ test('audit', audit_tests)
 state_tests = executable('state-test', 'tests/unit/state-test.c', 'src/observability/state.c',
                          include_directories: inc, dependencies: threads)
 test('state', state_tests)
+
+runtime_tests = executable('runtime-test', 'tests/unit/runtime-test.c', 'src/runtime/engine.c',
+                           'src/core/rules.c', 'src/core/glob.c', 'src/actions/action.c',
+                           'src/actions/registry.c', 'src/actions/template.c',
+                           'src/observability/audit.c', 'src/observability/log.c', 'src/observability/state.c',
+                           include_directories: inc, dependencies: [threads, zlib],
+                           link_args: ['-Wl,--wrap=lstat', '-Wl,--wrap=lstat64'])
+test('runtime', runtime_tests)

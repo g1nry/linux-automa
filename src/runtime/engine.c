@@ -22,14 +22,16 @@ typedef struct snapshot {
     atomic_uint references;
     unsigned generation;
     config_t config;
+    int order[FILEWARD_MAX_RULES];
+    int saved_enabled;
 } snapshot_t;
 typedef struct job {
-    struct job *next;
+    struct job *next, *previous;
     snapshot_t *snapshot;
     file_event_t event;
     struct stat last;
     int have_stat, closed, ready;
-    long long received, stable_since;
+    long long received, stable_since, check_after;
     char id[AUDIT_ID_SIZE];
 } job_t;
 struct runtime {
@@ -56,6 +58,8 @@ static long long clock_ms(void) {
 }
 static const char *type_name(event_type_t type) {
     switch (type) {
+    case EVENT_SAVED:
+        return "saved";
     case EVENT_CREATED:
         return "created";
     case EVENT_MODIFIED:
@@ -81,6 +85,11 @@ static snapshot_t *snapshot_new(const config_t *config, unsigned generation) {
     if (snapshot) {
         snapshot->config = *config;
         snapshot->generation = generation;
+        order_rules(config, snapshot->order);
+        snapshot->saved_enabled = 0;
+        for (int i = 0; i < config->rule_count; i++) {
+            snapshot->saved_enabled |= config->rules[i].enabled && config->rules[i].event == EVENT_SAVED;
+        }
         atomic_init(&snapshot->references, 1);
     }
     return snapshot;
@@ -97,6 +106,31 @@ static void context_for(job_t *job, int dry) {
 }
 static int same_path(job_t *first, job_t *second) {
     return strcmp(first->event.filename, second->event.filename) == 0;
+}
+/* Queue links are only changed under runtime->mutex. */
+static void append_job(runtime_t *runtime, job_t *job) {
+    job->previous = runtime->tail;
+    if (runtime->tail) {
+        runtime->tail->next = job;
+    } else {
+        runtime->pending = job;
+    }
+    runtime->tail = job;
+    runtime->pending_count++;
+}
+static void remove_pending(runtime_t *runtime, job_t *job) {
+    if (job->previous) {
+        job->previous->next = job->next;
+    } else {
+        runtime->pending = job->next;
+    }
+    if (job->next) {
+        job->next->previous = job->previous;
+    } else {
+        runtime->tail = job->previous;
+    }
+    job->next = job->previous = NULL;
+    runtime->pending_count--;
 }
 static int stat_job(job_t *job, struct stat *st) {
     char path[PATH_MAX];
@@ -152,13 +186,11 @@ static void execute_job(runtime_t *runtime, job_t *job) {
         fflush(stdout);
         funlockfile(stdout);
     }
-    int order[FILEWARD_MAX_RULES];
-    order_rules(config, order);
     for (int i = 0; i < config->rule_count; i++) {
         if (atomic_load(&runtime->cancel) || audit_failed()) {
             break;
         }
-        rule_t *rule = &config->rules[order[i]];
+        rule_t *rule = &config->rules[job->snapshot->order[i]];
         audit_rule(rule->name, action_type_name(rule->action.type));
         rule_result_t result = evaluate_rule(rule, job->event.type, &input);
         if (result != RULE_MATCH) {
@@ -210,8 +242,7 @@ static void execute_job(runtime_t *runtime, job_t *job) {
 }
 
 static job_t *take_job(runtime_t *runtime, unsigned slot) {
-    job_t *previous = NULL;
-    for (job_t *job = runtime->pending; job; previous = job, job = job->next) {
+    for (job_t *job = runtime->pending; job; job = job->next) {
         if (!job->ready) {
             continue;
         }
@@ -219,9 +250,10 @@ static job_t *take_job(runtime_t *runtime, unsigned slot) {
         for (job_t *earlier = runtime->pending; earlier != job; earlier = earlier->next) {
             if (same_path(earlier, job)) {
                 blocked = 1;
+                break;
             }
         }
-        for (unsigned i = 0; i < runtime->started; i++) {
+        for (unsigned i = 0; !blocked && i < runtime->started; i++) {
             if (runtime->active[i] && same_path(runtime->active[i], job)) {
                 blocked = 1;
             }
@@ -229,16 +261,7 @@ static job_t *take_job(runtime_t *runtime, unsigned slot) {
         if (blocked) {
             continue;
         }
-        if (previous) {
-            previous->next = job->next;
-        } else {
-            runtime->pending = job->next;
-        }
-        if (runtime->tail == job) {
-            runtime->tail = previous;
-        }
-        job->next = NULL;
-        runtime->pending_count--;
+        remove_pending(runtime, job);
         runtime->active_count++;
         runtime->active[slot] = job;
         return job;
@@ -332,20 +355,31 @@ int runtime_reload(runtime_t *runtime, const config_t *config) {
     release(old);
     return 0;
 }
+static int observe_event(const file_event_t *, runtime_t *, const rule_input_t *);
 int runtime_observe(const file_event_t *event, void *data) {
     runtime_t *runtime = data;
     snapshot_t *snapshot = runtime->current;
     audit_context(snapshot->config.watch_path, event->filename, type_name(event->type), snapshot->generation,
                   runtime->options.dry_run, NULL);
     if (event->type == EVENT_CLOSE_WRITE) {
-        audit_emit("file_closed", "observed", "FW_OK", 0, "writable file descriptor closed", 0, 0, NULL);
+        rule_input_t closed;
+        prepare_rule_input(snapshot->config.watch_path, event->filename, event->type, &closed);
+        audit_metadata(closed.metadata_valid ? &closed.metadata : NULL);
+        audit_emit("file_closed", "observed", "FW_OK", 0,
+                   "writable file descriptor closed; not a durability guarantee", 0, 0, NULL);
         pthread_mutex_lock(&runtime->mutex);
         for (job_t *job = runtime->pending; job; job = job->next) {
-            if (strcmp(job->event.filename, event->filename) == 0) {
+            if (!strcmp(job->event.filename, event->filename)) {
                 job->closed = 1;
+                job->check_after = 0;
             }
         }
         pthread_mutex_unlock(&runtime->mutex);
+        if (snapshot->saved_enabled && *event->filename) {
+            file_event_t saved = *event;
+            saved.type = EVENT_SAVED;
+            return observe_event(&saved, runtime, &closed);
+        }
         return 0;
     }
     if (event->type == EVENT_OVERFLOW || event->type == EVENT_WATCH_LOST) {
@@ -357,6 +391,12 @@ int runtime_observe(const file_event_t *event, void *data) {
                    "filesystem observation is incomplete", 0, 0, NULL);
         return event->type == EVENT_WATCH_LOST ? -1 : 0;
     }
+    return observe_event(event, runtime, NULL);
+}
+static int observe_event(const file_event_t *event, runtime_t *runtime, const rule_input_t *known) {
+    snapshot_t *snapshot = runtime->current;
+    audit_context(snapshot->config.watch_path, event->filename, type_name(event->type), snapshot->generation,
+                  runtime->options.dry_run, NULL);
     if (!*event->filename || event->type == EVENT_UNKNOWN) {
         return 0;
     }
@@ -364,7 +404,11 @@ int runtime_observe(const file_event_t *event, void *data) {
     runtime->observed++;
     pthread_mutex_unlock(&runtime->mutex);
     rule_input_t observed;
-    prepare_rule_input(snapshot->config.watch_path, event->filename, event->type, &observed);
+    if (known) {
+        observed = *known;
+    } else {
+        prepare_rule_input(snapshot->config.watch_path, event->filename, event->type, &observed);
+    }
     audit_metadata(observed.metadata_valid ? &observed.metadata : NULL);
     char id[AUDIT_ID_SIZE];
     audit_emit("file_observed", "observed", "FW_OK", 0, "kernel event received", 0, 0, id);
@@ -373,8 +417,9 @@ int runtime_observe(const file_event_t *event, void *data) {
     }
     audit_context(snapshot->config.watch_path, event->filename, type_name(event->type), snapshot->generation,
                   runtime->options.dry_run, id);
-    const char *filter = rule_result_description(evaluate_filters(&snapshot->config, event->filename));
-    if (evaluate_filters(&snapshot->config, event->filename) != RULE_MATCH) {
+    rule_result_t filter_result = evaluate_filters(&snapshot->config, event->filename);
+    const char *filter = rule_result_description(filter_result);
+    if (filter_result != RULE_MATCH) {
         audit_context(snapshot->config.watch_path, event->filename, type_name(event->type),
                       snapshot->generation, runtime->options.dry_run, id);
         audit_emit("event_filtered", "skipped", "FW_PATH_FILTERED", 0, filter, 0, 0, NULL);
@@ -387,18 +432,21 @@ int runtime_observe(const file_event_t *event, void *data) {
                 strcmp(job->event.filename, event->filename) == 0) {
                 job->stable_since = clock_ms();
                 job->closed = 0;
+                job->ready =
+                    runtime->options.ready_mode == 2 || (job->have_stat && !S_ISREG(job->last.st_mode));
+                job->check_after = 0;
+                pthread_mutex_unlock(&runtime->mutex);
                 audit_emit("event_coalesced", "skipped", "FW_EVENT_COALESCED", 0,
                            "pending modification updated", 0, 0, NULL);
-                pthread_mutex_unlock(&runtime->mutex);
                 return 0;
             }
         }
     }
     if (runtime->pending_count + runtime->active_count >= runtime->options.capacity) {
         runtime->dropped++;
+        pthread_mutex_unlock(&runtime->mutex);
         audit_emit("event_dropped", "failure", "FW_QUEUE_FULL", 0, "bounded action queue is full", 0, 0,
                    NULL);
-        pthread_mutex_unlock(&runtime->mutex);
         return 0;
     }
     job_t *job = calloc(1, sizeof(*job));
@@ -411,81 +459,93 @@ int runtime_observe(const file_event_t *event, void *data) {
     atomic_fetch_add(&snapshot->references, 1);
     snprintf(job->id, sizeof(job->id), "%s", id);
     job->received = job->stable_since = clock_ms();
+    job->closed = event->type == EVENT_SAVED;
     job->have_stat = observed.metadata_valid;
     if (job->have_stat) {
         job->last = observed.metadata;
     }
-    int content_event =
-        event->type == EVENT_CREATED || event->type == EVENT_MODIFIED || event->type == EVENT_MOVED_TO;
+    int content_event = event->type == EVENT_CREATED || event->type == EVENT_MODIFIED ||
+                        event->type == EVENT_MOVED_TO || event->type == EVENT_SAVED;
     job->ready =
         !content_event || runtime->options.ready_mode == 2 || (job->have_stat && !S_ISREG(job->last.st_mode));
-    if (runtime->tail) {
-        runtime->tail->next = job;
-    } else {
-        runtime->pending = job;
+    append_job(runtime, job);
+    if (job->ready) {
+        pthread_cond_broadcast(&runtime->changed);
     }
-    runtime->tail = job;
-    runtime->pending_count++;
-    pthread_cond_broadcast(&runtime->changed);
     pthread_mutex_unlock(&runtime->mutex);
     return 0;
 }
 void runtime_tick(runtime_t *runtime) {
     long long now = clock_ms();
+    int became_ready = 0;
     pthread_mutex_lock(&runtime->mutex);
-    job_t *previous = NULL, *job = runtime->pending;
+    job_t *job = runtime->pending;
     while (job) {
-        int discard = 0;
-        if (!job->ready) {
-            struct stat current;
-            context_for(job, runtime->options.dry_run);
-            if (stat_job(job, &current)) {
-                audit_emit("event_cancelled", "skipped", "FW_FILE_NOT_FOUND", errno,
-                           "file vanished before readiness", 0, 0, NULL);
-                discard = 1;
-            } else if (job->have_stat &&
-                       (current.st_ino != job->last.st_ino || current.st_dev != job->last.st_dev)) {
-                audit_emit("event_cancelled", "skipped", "FW_SOURCE_REPLACED", ESTALE,
-                           "file replaced before readiness", 0, 0, NULL);
-                discard = 1;
-            } else if (now - job->received >= runtime->options.ready_timeout_ms) {
-                audit_emit("event_cancelled", "failure", "FW_READY_TIMEOUT", ETIMEDOUT,
-                           "file did not become ready", 0, 0, NULL);
-                discard = 1;
-            } else {
-                if (!job->have_stat || !unchanged(&current, &job->last)) {
-                    job->stable_since = now;
-                }
-                job->last = current;
-                job->have_stat = 1;
-                int close_ok =
-                    runtime->options.ready_mode == 1 || job->closed || job->event.type == EVENT_MOVED_TO;
-                if (close_ok && now - job->stable_since >= runtime->options.settle_ms) {
-                    job->ready = 1;
-                    audit_emit("file_ready", "ready", "FW_OK", 0,
-                               job->closed ? "close_write and stability confirmed" : "stability confirmed", 0,
-                               now - job->received, NULL);
-                }
+        if (job->ready ||
+            (now < job->check_after && now - job->received < runtime->options.ready_timeout_ms)) {
+            job = job->next;
+            continue;
+        }
+        /* An unready job cannot be taken by workers. Main-loop ownership keeps
+           this job alive while I/O runs without the queue lock.
+           Other ready nodes may disappear, so read next/previous only after relocking. */
+        pthread_mutex_unlock(&runtime->mutex);
+        struct stat current;
+        int stat_error = stat_job(job, &current) ? errno : 0;
+        int discard = 0, ready = 0;
+        context_for(job, runtime->options.dry_run);
+        if (stat_error) {
+            audit_emit("event_cancelled", "skipped", "FW_FILE_NOT_FOUND", stat_error,
+                       "file vanished before readiness", 0, 0, NULL);
+            discard = 1;
+        } else if (job->have_stat &&
+                   (current.st_ino != job->last.st_ino || current.st_dev != job->last.st_dev)) {
+            audit_emit("event_cancelled", "skipped", "FW_SOURCE_REPLACED", ESTALE,
+                       "file replaced before readiness", 0, 0, NULL);
+            discard = 1;
+        } else if (now - job->received >= runtime->options.ready_timeout_ms) {
+            audit_emit("event_cancelled", "failure", "FW_READY_TIMEOUT", ETIMEDOUT,
+                       "file did not become ready", 0, 0, NULL);
+            discard = 1;
+        } else {
+            if (!job->have_stat || !unchanged(&current, &job->last)) {
+                job->stable_since = now;
+            }
+            job->last = current;
+            job->have_stat = 1;
+            int close_ok =
+                runtime->options.ready_mode == 1 || job->closed || job->event.type == EVENT_MOVED_TO;
+            ready = close_ok && now - job->stable_since >= runtime->options.settle_ms;
+            unsigned delay = close_ok ? runtime->options.settle_ms : 250;
+            if (delay < 50) {
+                delay = 50;
+            }
+            if (delay > 250) {
+                delay = 250;
+            }
+            job->check_after = now + delay;
+            if (ready) {
+                audit_metadata(&current);
+                audit_emit("file_ready", "ready", "FW_OK", 0,
+                           job->closed ? "close_write and stability confirmed" : "stability confirmed", 0,
+                           now - job->received, NULL);
             }
         }
+        pthread_mutex_lock(&runtime->mutex);
         job_t *next = job->next;
         if (discard) {
-            if (previous) {
-                previous->next = next;
-            } else {
-                runtime->pending = next;
-            }
-            if (runtime->tail == job) {
-                runtime->tail = previous;
-            }
-            runtime->pending_count--;
+            became_ready = 1; /* Removing a head can release an already-ready follower. */
+            remove_pending(runtime, job);
             finish_job(job);
-        } else {
-            previous = job;
+        } else if (ready) {
+            job->ready = 1;
+            became_ready = 1;
         }
         job = next;
     }
-    pthread_cond_broadcast(&runtime->changed);
+    if (became_ready || runtime->pending_count) {
+        pthread_cond_broadcast(&runtime->changed);
+    }
     pthread_mutex_unlock(&runtime->mutex);
 }
 void runtime_status(runtime_t *runtime, runtime_status_t *status) {
@@ -511,7 +571,7 @@ void runtime_destroy(runtime_t *runtime) {
     }
     while (runtime->pending) {
         job_t *job = runtime->pending;
-        runtime->pending = job->next;
+        remove_pending(runtime, job);
         context_for(job, runtime->options.dry_run);
         audit_emit("event_cancelled", "cancelled", "FW_SHUTDOWN", ECANCELED,
                    "pending action cancelled on shutdown", 0, 0, NULL);

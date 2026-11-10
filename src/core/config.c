@@ -77,6 +77,9 @@ static int parse_word(char **text, char *out, size_t out_size) {
 }
 
 static event_type_t parse_event_type(const char *token) {
+    if (strcmp(token, "saved") == 0) {
+        return EVENT_SAVED;
+    }
     if (strcmp(token, "created") == 0) {
         return EVENT_CREATED;
     }

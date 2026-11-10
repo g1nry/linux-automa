@@ -53,6 +53,8 @@ const char *audit_error_code(int error) {
         return "FW_DISK_FULL";
     case ENAMETOOLONG:
         return "FW_PATH_TOO_LONG";
+    case EXDEV:
+        return "FW_CROSS_DEVICE_MOVE";
     case EINVAL:
         return "FW_INVALID_ARGUMENT";
     case ELOOP:
