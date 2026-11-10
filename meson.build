@@ -1,5 +1,5 @@
 project('fileward', 'c',
-        version: '1.1.0-dev',
+        version: '1.1.0',
         license: 'MIT',
         default_options: ['warning_level=3', 'c_std=c11'])
 
