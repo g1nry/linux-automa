@@ -107,7 +107,12 @@ static void print_usage(const char *program_name) {
             program_name);
     fprintf(stderr, "       %s stop [--pidfile <file>]\n", program_name);
     fprintf(stderr, "       %s status [--pidfile <file>]\n", program_name);
-    fprintf(stderr, "       %s reload [--pidfile <file>]\n", program_name);
+    fprintf(stderr, "       %s reload [--socket <path> | --pidfile <file>]\n", program_name);
+    fprintf(stderr, "       %s health [--socket <path>]\n", program_name);
+    fprintf(stderr, "       %s history [--journal <file>] [--all] [--limit <count>] [--event-id <id>]\n",
+            program_name);
+    fprintf(stderr, "       %s stats [--journal <file>]\n", program_name);
+    fprintf(stderr, "       %s actions\n", program_name);
     fprintf(stderr, "       %s test [--config <file>] <path>\n", program_name);
     fprintf(stderr, "       %s validate --config <file>\n", program_name);
     fprintf(stderr, "       %s explain --config <file> [--event <event>] <path>\n", program_name);
@@ -793,6 +798,10 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
 }
 
 static int stop_command(int argc, char *argv[]) {
+    if (argc == 1 && is_help_arg(argv[0])) {
+        printf("Usage: fileward stop [--pidfile <file>]\n");
+        return EXIT_OK;
+    }
     const char *pidfile_path = "/tmp/fileward.pid";
     for (int i = 0; i < argc; i++) {
         if (strcmp(argv[i], "--pidfile") == 0) {
@@ -832,6 +841,10 @@ static int stop_command(int argc, char *argv[]) {
 }
 
 static int status_command(int argc, char *argv[]) {
+    if (argc == 1 && is_help_arg(argv[0])) {
+        printf("Usage: fileward status [--pidfile <file>]\n");
+        return EXIT_OK;
+    }
     const char *pidfile_path = "/tmp/fileward.pid";
     for (int i = 0; i < argc; i++) {
         if (strcmp(argv[i], "--pidfile") == 0) {
@@ -885,6 +898,10 @@ static int live_command(int argc, char **argv, int reload) {
 }
 
 static int reload_command(int argc, char *argv[]) {
+    if (argc == 1 && is_help_arg(argv[0])) {
+        printf("Usage: fileward reload [--socket <path> | --pidfile <file>]\n");
+        return EXIT_OK;
+    }
     if (!argc || strcmp(argv[0], "--socket") == 0) {
         return live_command(argc, argv, 1);
     }
