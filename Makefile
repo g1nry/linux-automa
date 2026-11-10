@@ -35,13 +35,15 @@ release:
 	meson compile -C $(RELEASE_BUILD_DIR) $(PROJECT_NAME)
 
 check: build
-	@./$(BINARY) help >/tmp/fileward-check.out 2>&1; \
+	@check_output=$$(mktemp); \
+	trap 'rm -f "$$check_output"' EXIT; \
+	./$(BINARY) help >"$$check_output" 2>&1; \
 	status=$$?; \
-	if [ $$status -eq 0 ] && grep -q "Usage:" /tmp/fileward-check.out; then \
+	if [ $$status -eq 0 ] && grep -q "Usage:" "$$check_output"; then \
 		echo "check passed"; \
 	else \
 		echo "check failed"; \
-		cat /tmp/fileward-check.out; \
+		cat "$$check_output"; \
 		exit 1; \
 	fi
 	meson test -C $(BUILD_DIR) --print-errorlogs
@@ -54,6 +56,7 @@ check: build
 	python3 tests/integration/integrations-test.py
 	python3 tests/integration/control-smoke.py ./$(BINARY)
 	python3 tests/integration/saved-smoke.py ./$(BINARY)
+	python3 tests/integration/journal-boundary.py ./$(BINARY)
 	python3 tests/integration/installer-test.py ./$(BINARY)
 
 run: build

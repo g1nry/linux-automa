@@ -33,9 +33,9 @@ static jsmntok_t *value(const char *line, jsmntok_t *tokens, int count, const ch
     return NULL;
 }
 int audit_query(const char *path, int stats, int all, unsigned limit, const char *event_id) {
-    char **history = calloc(limit, sizeof(char *));
-    char *line = malloc(131072);
-    if (!history || !line) {
+    char **history = stats ? NULL : calloc(limit, sizeof(char *));
+    char *line = malloc(AUDIT_RECORD_MAX + 1);
+    if ((!stats && !history) || !line) {
         free(history);
         free(line);
         return 3;
@@ -74,8 +74,10 @@ int audit_query(const char *path, int stats, int all, unsigned limit, const char
         }
         found = 1;
         /* Read a finite segment snapshot even when the active writer outpaces queries. */
-        while (ftello(file) < st.st_size && fgets(line, 131072, file)) {
-            if (ftello(file) > st.st_size) break;
+        while (ftello(file) < st.st_size && fgets(line, AUDIT_RECORD_MAX + 1, file)) {
+            if (ftello(file) > st.st_size) {
+                break;
+            }
             if (!strchr(line, '\n')) {
                 /* A live writer can have an incomplete final line. */
                 if (!feof(file)) {
@@ -122,6 +124,9 @@ int audit_query(const char *path, int stats, int all, unsigned limit, const char
                 failures += equal(line, outcome, "failure") && !equal(line, kind, "diagnostic") &&
                             !equal(line, kind, "exec_status");
             }
+            if (stats) {
+                continue;
+            }
             if (!all && !equal(line, kind, "action_result")) {
                 continue;
             }
@@ -163,8 +168,10 @@ int audit_query(const char *path, int stats, int all, unsigned limit, const char
             }
         }
     }
-    for (unsigned i = 0; i < limit; i++) {
-        free(history[i]);
+    if (history) {
+        for (unsigned i = 0; i < limit; i++) {
+            free(history[i]);
+        }
     }
     free(history);
     free(line);
