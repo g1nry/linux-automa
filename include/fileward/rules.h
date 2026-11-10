@@ -25,6 +25,7 @@ typedef enum {
 
 typedef struct {
     const char *path;
+    const char *basename, *extension;
     struct stat metadata;
     int metadata_valid;
     time_t now;

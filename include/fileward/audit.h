@@ -5,6 +5,7 @@
 #include <sys/stat.h>
 
 #define AUDIT_ID_SIZE 80
+#define AUDIT_RECORD_MAX 131072U
 /* One process owns the journal through a separate lock file, including rotation. */
 int audit_open(const char *path, uint64_t max_bytes);
 void audit_set_sync(int enabled);

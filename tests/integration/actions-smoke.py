@@ -188,17 +188,19 @@ elif sys.argv[1] in ("hang", "background"):
         check(time.monotonic() - began < 3, "shutdown must interrupt exec")
         check(child_stopped(child), "shutdown must stop descendants")
 
-        # Exercise actual cross-filesystem publication when a second mount exists.
+        # An actual EXDEV must retain the source without a copy or success record.
         if os.access("/dev/shm", os.W_OK) and os.stat("/dev/shm").st_dev != os.stat(lab).st_dev:
             with tempfile.TemporaryDirectory(prefix="fileward-exdev-", dir="/dev/shm") as destination:
                 write_config(f'rule cross conflict=fail when moved_to ** move "{destination}"\n')
+                state_before_cross = journal()
                 start()
                 emit("cross-device.txt", b"cross-device payload")
                 target = Path(destination) / "cross-device.txt"
-                wait_for(lambda: target.exists() and not (inbox / "cross-device.txt").exists())
+                wait_for(lambda: "rule 'cross': action failed" in logs())
                 stop()
-                check(target.read_bytes() == b"cross-device payload", "actual EXDEV move contents")
-                check(journal().count(b"\tmove\n") == 3, "cross-device success journal")
+                check(not target.exists() and not list(Path(destination).iterdir()), "EXDEV must publish nothing")
+                check((inbox / "cross-device.txt").read_bytes() == b"cross-device payload", "EXDEV must retain source")
+                check(journal() == state_before_cross, "EXDEV must not record success")
 
         # A fresh dry-run performs none of the four side effects.
         write_config(pipeline.replace(str(lab / "copied"), str(lab / "dry-copy"))

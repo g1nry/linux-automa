@@ -22,6 +22,14 @@ jobs:
       - name: Build and check rules, CLI and daemon
         run: make check
 
+      - name: Build and check optimized binary
+        run: |
+          make release
+          meson test -C build-release --print-errorlogs
+          python3 tests/integration/saved-smoke.py ./build-release/fileward
+          python3 tests/integration/journal-boundary.py ./build-release/fileward
+          python3 tests/integration/observability-smoke.py ./build-release/fileward
+
       - name: Check config rule matching
         shell: bash
         run: |
@@ -57,3 +65,5 @@ jobs:
         run: |
           python3 tests/integration/observability-smoke.py ./build-asan/fileward
           python3 tests/integration/control-smoke.py ./build-asan/fileward
+          python3 tests/integration/saved-smoke.py ./build-asan/fileward
+          python3 tests/integration/journal-boundary.py ./build-asan/fileward

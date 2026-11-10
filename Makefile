@@ -1,13 +1,16 @@
 PROJECT_NAME := fileward
 BUILD_DIR := build
 BINARY := $(BUILD_DIR)/$(PROJECT_NAME)
+RELEASE_BUILD_DIR := build-release
+RELEASE_BINARY := $(RELEASE_BUILD_DIR)/$(PROJECT_NAME)
 
-.PHONY: help setup build check run clean install-user uninstall-user restart-user status-user logs-user reload-user health-user check-systemd
+.PHONY: help setup build release check run clean install-user uninstall-user restart-user status-user logs-user reload-user health-user check-systemd
 
 help:
 	@echo "Available targets:"
 	@echo "  make setup          Configure Meson build directory"
-	@echo "  make build          Build fileward"
+	@echo "  make build          Build fileward for development"
+	@echo "  make release        Build an optimized binary for installation"
 	@echo "  make check          Build and run unit, CLI and smoke tests"
 	@echo "  make run            Run fileward against ~/Downloads"
 	@echo "  make clean          Remove build directory"
@@ -27,14 +30,20 @@ build:
 	@if [ ! -d "$(BUILD_DIR)" ]; then meson setup $(BUILD_DIR); fi
 	meson compile -C $(BUILD_DIR)
 
+release:
+	@if [ ! -d "$(RELEASE_BUILD_DIR)" ]; then meson setup $(RELEASE_BUILD_DIR) --buildtype=release -Db_ndebug=false; fi
+	meson compile -C $(RELEASE_BUILD_DIR) $(PROJECT_NAME)
+
 check: build
-	@./$(BINARY) help >/tmp/fileward-check.out 2>&1; \
+	@check_output=$$(mktemp); \
+	trap 'rm -f "$$check_output"' EXIT; \
+	./$(BINARY) help >"$$check_output" 2>&1; \
 	status=$$?; \
-	if [ $$status -eq 0 ] && grep -q "Usage:" /tmp/fileward-check.out; then \
+	if [ $$status -eq 0 ] && grep -q "Usage:" "$$check_output"; then \
 		echo "check passed"; \
 	else \
 		echo "check failed"; \
-		cat /tmp/fileward-check.out; \
+		cat "$$check_output"; \
 		exit 1; \
 	fi
 	meson test -C $(BUILD_DIR) --print-errorlogs
@@ -46,6 +55,8 @@ check: build
 	python3 tests/integration/observability-smoke.py ./$(BINARY)
 	python3 tests/integration/integrations-test.py
 	python3 tests/integration/control-smoke.py ./$(BINARY)
+	python3 tests/integration/saved-smoke.py ./$(BINARY)
+	python3 tests/integration/journal-boundary.py ./$(BINARY)
 	python3 tests/integration/installer-test.py ./$(BINARY)
 
 run: build
@@ -55,8 +66,8 @@ run: build
 clean:
 	rm -rf $(BUILD_DIR)
 
-install-user: build
-	python3 scripts/manage-user.py install --binary "$(abspath $(BINARY))" $(if $(CONFIG),--config "$(CONFIG)")
+install-user: release
+	python3 scripts/manage-user.py install --binary "$(abspath $(RELEASE_BINARY))" $(if $(CONFIG),--config "$(CONFIG)")
 
 uninstall-user:
 	python3 scripts/manage-user.py uninstall

@@ -52,6 +52,8 @@ static void handle_signal(int signal_number) {
 
 static const char *event_type_to_string(event_type_t type) {
     switch (type) {
+    case EVENT_SAVED:
+        return "saved";
     case EVENT_CREATED:
         return "created";
     case EVENT_MODIFIED:
@@ -68,6 +70,9 @@ static const char *event_type_to_string(event_type_t type) {
 }
 
 static event_type_t parse_event_type(const char *token) {
+    if (strcmp(token, "saved") == 0) {
+        return EVENT_SAVED;
+    }
     if (strcmp(token, "created") == 0) {
         return EVENT_CREATED;
     }
@@ -102,7 +107,12 @@ static void print_usage(const char *program_name) {
             program_name);
     fprintf(stderr, "       %s stop [--pidfile <file>]\n", program_name);
     fprintf(stderr, "       %s status [--pidfile <file>]\n", program_name);
-    fprintf(stderr, "       %s reload [--pidfile <file>]\n", program_name);
+    fprintf(stderr, "       %s reload [--socket <path> | --pidfile <file>]\n", program_name);
+    fprintf(stderr, "       %s health [--socket <path>]\n", program_name);
+    fprintf(stderr, "       %s history [--journal <file>] [--all] [--limit <count>] [--event-id <id>]\n",
+            program_name);
+    fprintf(stderr, "       %s stats [--journal <file>]\n", program_name);
+    fprintf(stderr, "       %s actions\n", program_name);
     fprintf(stderr, "       %s test [--config <file>] <path>\n", program_name);
     fprintf(stderr, "       %s validate --config <file>\n", program_name);
     fprintf(stderr, "       %s explain --config <file> [--event <event>] <path>\n", program_name);
@@ -150,9 +160,8 @@ static void print_help(const char *program_name) {
     fprintf(stderr, "  --pidfile <file>   write/read the daemon pidfile\n");
     fprintf(stderr, "  --log-file <file>  redirect logs to a file\n");
     fprintf(stderr, "  --state-file <file> append handled events to a journal file\n");
-    fprintf(
-        stderr,
-        "  --event <event>    event type for explain: created, modified, deleted, moved_from, moved_to\n");
+    fprintf(stderr, "  --event <event>    event type for explain: created, modified, saved, deleted, "
+                    "moved_from, moved_to\n");
     fprintf(stderr, "  The watch directory is required unless --config supplies it.\n");
     fprintf(stderr, "\nExamples:\n");
     fprintf(stderr, "  %s run --config fileward.conf\n", program_name);
@@ -789,6 +798,10 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
 }
 
 static int stop_command(int argc, char *argv[]) {
+    if (argc == 1 && is_help_arg(argv[0])) {
+        printf("Usage: fileward stop [--pidfile <file>]\n");
+        return EXIT_OK;
+    }
     const char *pidfile_path = "/tmp/fileward.pid";
     for (int i = 0; i < argc; i++) {
         if (strcmp(argv[i], "--pidfile") == 0) {
@@ -828,6 +841,10 @@ static int stop_command(int argc, char *argv[]) {
 }
 
 static int status_command(int argc, char *argv[]) {
+    if (argc == 1 && is_help_arg(argv[0])) {
+        printf("Usage: fileward status [--pidfile <file>]\n");
+        return EXIT_OK;
+    }
     const char *pidfile_path = "/tmp/fileward.pid";
     for (int i = 0; i < argc; i++) {
         if (strcmp(argv[i], "--pidfile") == 0) {
@@ -881,6 +898,10 @@ static int live_command(int argc, char **argv, int reload) {
 }
 
 static int reload_command(int argc, char *argv[]) {
+    if (argc == 1 && is_help_arg(argv[0])) {
+        printf("Usage: fileward reload [--socket <path> | --pidfile <file>]\n");
+        return EXIT_OK;
+    }
     if (!argc || strcmp(argv[0], "--socket") == 0) {
         return live_command(argc, argv, 1);
     }

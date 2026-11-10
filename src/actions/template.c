@@ -67,6 +67,8 @@ int action_split_command(const char *text, char *storage, size_t size, char *arg
 
 static const char *event_name(event_type_t event) {
     switch (event) {
+    case EVENT_SAVED:
+        return "saved";
     case EVENT_CREATED:
         return "created";
     case EVENT_MODIFIED:

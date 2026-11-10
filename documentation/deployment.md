@@ -12,7 +12,8 @@ make health-user
 
 Пользовательский systemd должен быть доступен в текущей сессии:
 `systemctl --user is-system-running`. Установка сервиса выполняется без sudo.
-Сборка требует Linux и glibc >= 2.34; libsystemd для неё не нужен.
+Установщик Makefile использует оптимизированную сборку `build-release/`;
+`make build` сохраняет отдельный отладочный профиль. Сборка требует Linux и glibc >= 2.34; libsystemd для неё не нужен.
 При первой установке создаётся каталог `~/Downloads/Fileward/inbox` и одно
 правило `log`: исходные файлы остаются на месте. Попробуйте
 `touch ~/Downloads/Fileward/inbox/hello.txt`, затем `make logs-user`.

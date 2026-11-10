@@ -20,7 +20,7 @@
         }                                                                                                    \
     } while (0)
 
-static int busy_failures, rename_calls, inject_exdev, fail_write;
+static int busy_failures, rename_calls, inject_exdev, fail_write, read_calls;
 static const char *mutate_source;
 ssize_t __real_write(int, const void *, size_t);
 ssize_t __wrap_write(int fd, const void *data, size_t length) {
@@ -32,6 +32,7 @@ ssize_t __wrap_write(int fd, const void *data, size_t length) {
 }
 ssize_t __real_read(int, void *, size_t);
 ssize_t __wrap_read(int fd, void *data, size_t length) {
+    read_calls++;
     ssize_t result = __real_read(fd, data, length);
     if (result > 0 && mutate_source) {
         FILE *file = fopen(mutate_source, "a");
@@ -181,18 +182,26 @@ int main(void) {
     action.type = ACTION_MOVE;
     action.conflict = CONFLICT_FAIL;
     strcpy(action.target, "moved");
+    struct stat original, moved;
+    CHECK(lstat("inbox/a.txt", &original) == 0);
+    read_calls = 0;
     busy_failures = 2;
     rename_calls = 0;
     CHECK(execute_action(&action, "inbox", "a.txt", EVENT_CREATED, 0) == 0);
-    CHECK(rename_calls == 3 && busy_failures == 0);
+    CHECK(rename_calls == 3 && busy_failures == 0 && read_calls == 0);
+    CHECK(lstat("moved/a.txt", &moved) == 0);
+    CHECK(original.st_ino == moved.st_ino && original.st_dev == moved.st_dev);
     CHECK(access("inbox/a.txt", F_OK) != 0);
     expect_text("moved/a.txt", "new\n");
     write_text("inbox/exdev.txt", "cross-device\n");
     inject_exdev = 1;
-    CHECK(execute_action(&action, "inbox", "exdev.txt", EVENT_CREATED, 0) == 0);
+    read_calls = 0;
+    CHECK(execute_action(&action, "inbox", "exdev.txt", EVENT_CREATED, 0) < 0 && errno == EXDEV);
+    CHECK(strcmp(action_last_error_code(EXDEV), "FW_CROSS_DEVICE_MOVE") == 0);
+    CHECK(read_calls == 0);
     inject_exdev = 0;
-    CHECK(access("inbox/exdev.txt", F_OK) != 0);
-    expect_text("moved/exdev.txt", "cross-device\n");
+    CHECK(access("moved/exdev.txt", F_OK) != 0);
+    expect_text("inbox/exdev.txt", "cross-device\n");
     write_text("inbox/exhaust.txt", "retain\n");
     busy_failures = 10;
     rename_calls = 0;

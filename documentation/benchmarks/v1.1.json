@@ -1,0 +1,517 @@
+{
+  "title": "Локальное сравнение Fileward 1.0 и 1.1",
+  "baseline_revision": "2ed0f39",
+  "before_optimization_revision": "7ed3a2a",
+  "target_version": "1.1.0",
+  "compiler": "GCC 14.2.0",
+  "buildtype": "release",
+  "b_ndebug": false,
+  "system": "Linux; локальные временные каталоги",
+  "profiles": [
+    {
+      "name": "heavy",
+      "results": [
+        {
+          "files": 600,
+          "rules": 64,
+          "workers": 4,
+          "journal_sync": false,
+          "runs": 7,
+          "samples": [
+            {
+              "seconds": 0.5605,
+              "cpu_seconds": 0.73,
+              "peak_rss_kib": 4248,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            },
+            {
+              "seconds": 0.6004,
+              "cpu_seconds": 0.72,
+              "peak_rss_kib": 5336,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            },
+            {
+              "seconds": 0.6072,
+              "cpu_seconds": 0.73,
+              "peak_rss_kib": 4940,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            },
+            {
+              "seconds": 0.6012,
+              "cpu_seconds": 0.72,
+              "peak_rss_kib": 5400,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            },
+            {
+              "seconds": 0.5773,
+              "cpu_seconds": 0.74,
+              "peak_rss_kib": 4860,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            },
+            {
+              "seconds": 0.6178,
+              "cpu_seconds": 0.74,
+              "peak_rss_kib": 4752,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            },
+            {
+              "seconds": 0.5976,
+              "cpu_seconds": 0.76,
+              "peak_rss_kib": 4236,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            }
+          ],
+          "median_seconds": 0.6004,
+          "median_files_per_second": 999.37,
+          "version": "v1.0"
+        },
+        {
+          "files": 600,
+          "rules": 64,
+          "workers": 4,
+          "journal_sync": false,
+          "runs": 7,
+          "samples": [
+            {
+              "seconds": 0.6237,
+              "cpu_seconds": 0.77,
+              "peak_rss_kib": 4296,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            },
+            {
+              "seconds": 0.6638,
+              "cpu_seconds": 0.82,
+              "peak_rss_kib": 4200,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            },
+            {
+              "seconds": 0.5766,
+              "cpu_seconds": 0.75,
+              "peak_rss_kib": 4248,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            },
+            {
+              "seconds": 0.6322,
+              "cpu_seconds": 0.77,
+              "peak_rss_kib": 4128,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            },
+            {
+              "seconds": 0.5955,
+              "cpu_seconds": 0.78,
+              "peak_rss_kib": 4300,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            },
+            {
+              "seconds": 0.6207,
+              "cpu_seconds": 0.78,
+              "peak_rss_kib": 4228,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            },
+            {
+              "seconds": 0.6386,
+              "cpu_seconds": 0.79,
+              "peak_rss_kib": 4212,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            }
+          ],
+          "median_seconds": 0.6237,
+          "median_files_per_second": 962.04,
+          "version": "1.1 до оптимизации (7ed3a2a)"
+        },
+        {
+          "files": 600,
+          "rules": 64,
+          "workers": 4,
+          "journal_sync": false,
+          "runs": 7,
+          "samples": [
+            {
+              "seconds": 0.3062,
+              "cpu_seconds": 0.43,
+              "peak_rss_kib": 5712,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            },
+            {
+              "seconds": 0.2716,
+              "cpu_seconds": 0.43,
+              "peak_rss_kib": 7592,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            },
+            {
+              "seconds": 0.3076,
+              "cpu_seconds": 0.45,
+              "peak_rss_kib": 7996,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            },
+            {
+              "seconds": 0.2874,
+              "cpu_seconds": 0.43,
+              "peak_rss_kib": 5020,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            },
+            {
+              "seconds": 0.3033,
+              "cpu_seconds": 0.45,
+              "peak_rss_kib": 5868,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            },
+            {
+              "seconds": 0.307,
+              "cpu_seconds": 0.44,
+              "peak_rss_kib": 5944,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            },
+            {
+              "seconds": 0.3002,
+              "cpu_seconds": 0.44,
+              "peak_rss_kib": 5680,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            }
+          ],
+          "median_seconds": 0.3033,
+          "median_files_per_second": 1978.01,
+          "version": "v1.1.0"
+        }
+      ]
+    },
+    {
+      "name": "minimal",
+      "results": [
+        {
+          "files": 2000,
+          "rules": 1,
+          "workers": 4,
+          "journal_sync": false,
+          "runs": 5,
+          "samples": [
+            {
+              "seconds": 0.2642,
+              "cpu_seconds": 0.32,
+              "peak_rss_kib": 4272,
+              "audit_records": 14003,
+              "rules_evaluated": 2000,
+              "actions_succeeded": 2000
+            },
+            {
+              "seconds": 0.2727,
+              "cpu_seconds": 0.34,
+              "peak_rss_kib": 4176,
+              "audit_records": 14003,
+              "rules_evaluated": 2000,
+              "actions_succeeded": 2000
+            },
+            {
+              "seconds": 0.2698,
+              "cpu_seconds": 0.33,
+              "peak_rss_kib": 4236,
+              "audit_records": 14003,
+              "rules_evaluated": 2000,
+              "actions_succeeded": 2000
+            },
+            {
+              "seconds": 0.272,
+              "cpu_seconds": 0.33,
+              "peak_rss_kib": 4308,
+              "audit_records": 14003,
+              "rules_evaluated": 2000,
+              "actions_succeeded": 2000
+            },
+            {
+              "seconds": 0.2736,
+              "cpu_seconds": 0.34,
+              "peak_rss_kib": 4172,
+              "audit_records": 14003,
+              "rules_evaluated": 2000,
+              "actions_succeeded": 2000
+            }
+          ],
+          "median_seconds": 0.272,
+          "median_files_per_second": 7352.54,
+          "version": "v1.0"
+        },
+        {
+          "files": 2000,
+          "rules": 1,
+          "workers": 4,
+          "journal_sync": false,
+          "runs": 5,
+          "samples": [
+            {
+              "seconds": 0.1636,
+              "cpu_seconds": 0.2,
+              "peak_rss_kib": 4088,
+              "audit_records": 14003,
+              "rules_evaluated": 2000,
+              "actions_succeeded": 2000
+            },
+            {
+              "seconds": 0.1634,
+              "cpu_seconds": 0.2,
+              "peak_rss_kib": 4128,
+              "audit_records": 14003,
+              "rules_evaluated": 2000,
+              "actions_succeeded": 2000
+            },
+            {
+              "seconds": 0.1651,
+              "cpu_seconds": 0.21,
+              "peak_rss_kib": 4028,
+              "audit_records": 14003,
+              "rules_evaluated": 2000,
+              "actions_succeeded": 2000
+            },
+            {
+              "seconds": 0.167,
+              "cpu_seconds": 0.2,
+              "peak_rss_kib": 4012,
+              "audit_records": 14003,
+              "rules_evaluated": 2000,
+              "actions_succeeded": 2000
+            },
+            {
+              "seconds": 0.1565,
+              "cpu_seconds": 0.19,
+              "peak_rss_kib": 4064,
+              "audit_records": 14003,
+              "rules_evaluated": 2000,
+              "actions_succeeded": 2000
+            }
+          ],
+          "median_seconds": 0.1636,
+          "median_files_per_second": 12223.79,
+          "version": "v1.1.0"
+        }
+      ]
+    },
+    {
+      "name": "single",
+      "results": [
+        {
+          "files": 600,
+          "rules": 64,
+          "workers": 1,
+          "journal_sync": false,
+          "runs": 5,
+          "samples": [
+            {
+              "seconds": 0.5136,
+              "cpu_seconds": 0.52,
+              "peak_rss_kib": 5964,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            },
+            {
+              "seconds": 0.4996,
+              "cpu_seconds": 0.51,
+              "peak_rss_kib": 5820,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            },
+            {
+              "seconds": 0.5291,
+              "cpu_seconds": 0.51,
+              "peak_rss_kib": 5800,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            },
+            {
+              "seconds": 0.5333,
+              "cpu_seconds": 0.52,
+              "peak_rss_kib": 5964,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            },
+            {
+              "seconds": 0.5209,
+              "cpu_seconds": 0.57,
+              "peak_rss_kib": 4988,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            }
+          ],
+          "median_seconds": 0.5209,
+          "median_files_per_second": 1151.83,
+          "version": "v1.0"
+        },
+        {
+          "files": 600,
+          "rules": 64,
+          "workers": 1,
+          "journal_sync": false,
+          "runs": 5,
+          "samples": [
+            {
+              "seconds": 0.2699,
+              "cpu_seconds": 0.29,
+              "peak_rss_kib": 5308,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            },
+            {
+              "seconds": 0.2288,
+              "cpu_seconds": 0.22,
+              "peak_rss_kib": 6096,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            },
+            {
+              "seconds": 0.2315,
+              "cpu_seconds": 0.22,
+              "peak_rss_kib": 6008,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            },
+            {
+              "seconds": 0.2316,
+              "cpu_seconds": 0.23,
+              "peak_rss_kib": 6096,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            },
+            {
+              "seconds": 0.2555,
+              "cpu_seconds": 0.28,
+              "peak_rss_kib": 5488,
+              "audit_records": 42003,
+              "rules_evaluated": 38400,
+              "actions_succeeded": 600
+            }
+          ],
+          "median_seconds": 0.2316,
+          "median_files_per_second": 2590.38,
+          "version": "v1.1.0"
+        }
+      ]
+    },
+    {
+      "name": "sync",
+      "results": [
+        {
+          "files": 50,
+          "rules": 4,
+          "workers": 4,
+          "journal_sync": true,
+          "runs": 3,
+          "samples": [
+            {
+              "seconds": 0.0646,
+              "cpu_seconds": 0.01,
+              "peak_rss_kib": 4104,
+              "audit_records": 503,
+              "rules_evaluated": 200,
+              "actions_succeeded": 50
+            },
+            {
+              "seconds": 0.0655,
+              "cpu_seconds": 0.02,
+              "peak_rss_kib": 4004,
+              "audit_records": 503,
+              "rules_evaluated": 200,
+              "actions_succeeded": 50
+            },
+            {
+              "seconds": 0.0653,
+              "cpu_seconds": 0.01,
+              "peak_rss_kib": 4064,
+              "audit_records": 503,
+              "rules_evaluated": 200,
+              "actions_succeeded": 50
+            }
+          ],
+          "median_seconds": 0.0653,
+          "median_files_per_second": 765.93,
+          "version": "v1.0"
+        },
+        {
+          "files": 50,
+          "rules": 4,
+          "workers": 4,
+          "journal_sync": true,
+          "runs": 3,
+          "samples": [
+            {
+              "seconds": 0.0593,
+              "cpu_seconds": 0.01,
+              "peak_rss_kib": 6104,
+              "audit_records": 503,
+              "rules_evaluated": 200,
+              "actions_succeeded": 50
+            },
+            {
+              "seconds": 0.0563,
+              "cpu_seconds": 0.0,
+              "peak_rss_kib": 3996,
+              "audit_records": 503,
+              "rules_evaluated": 200,
+              "actions_succeeded": 50
+            },
+            {
+              "seconds": 0.0585,
+              "cpu_seconds": 0.01,
+              "peak_rss_kib": 3960,
+              "audit_records": 503,
+              "rules_evaluated": 200,
+              "actions_succeeded": 50
+            }
+          ],
+          "median_seconds": 0.0585,
+          "median_files_per_second": 854.56,
+          "version": "v1.1.0"
+        }
+      ]
+    }
+  ],
+  "target_revision": "a9fa20dc30e6a57be22eb69eb7d7fa8a63cd2dcb"
+}
