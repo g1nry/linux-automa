@@ -6,6 +6,9 @@ StartLimitBurst=5
 [Service]
 Type=notify
 NotifyAccess=main
+StandardOutput=journal
+StandardError=journal
+SyslogLevelPrefix=yes
 ExecStartPre=@BINARY@ validate --config @CONFIG@
 ExecStart=@BINARY@ run --systemd --config @CONFIG@ --journal @JOURNAL@ --control-socket @CONTROL@
 ExecStartPost=@BINARY@ health --socket @CONTROL@

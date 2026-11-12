@@ -20,6 +20,8 @@ void audit_emit(const char *kind, const char *outcome, const char *code, int err
 void audit_metadata(const struct stat *metadata);
 void audit_destination(const char *path);
 void audit_exec_status(int exit_code, int signal);
+/* Executable path for human-readable failures; never include command arguments. */
+void audit_executable(const char *path);
 void audit_diagnostic(const char *level, const char *message);
 int audit_query(const char *path, int stats, int all, unsigned limit, const char *event_id);
 #endif

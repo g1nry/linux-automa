@@ -389,6 +389,7 @@ int action_handle_exec(const action_t *action, const char *root, const char *fil
         errno = EINVAL;
         return -1;
     }
+    audit_executable(arguments[0]);
     if (dry_run) {
         log_info("dry-run: would exec '%s' with %d arguments (timeout %ds)", arguments[0], count - 1,
                  action->timeout_seconds);
@@ -485,8 +486,6 @@ int action_handle_exec(const action_t *action, const char *root, const char *fil
             errno = saved;
             if (saved == ECANCELED) {
                 log_info("exec '%s' cancelled", arguments[0]);
-            } else {
-                log_error("exec '%s' timed out", arguments[0]);
             }
             return -1;
         }
@@ -506,8 +505,6 @@ int action_handle_exec(const action_t *action, const char *root, const char *fil
                  WIFEXITED(status) ? WEXITSTATUS(status) : -1, WIFSIGNALED(status) ? WTERMSIG(status) : 0);
         audit_emit("exec_status", "failure", WIFSIGNALED(status) ? "FW_EXEC_SIGNAL" : "FW_EXEC_EXIT", 0,
                    detail, 0, 0, NULL);
-        log_error("exec '%s' failed (exit %d, signal %d)", arguments[0],
-                  WIFEXITED(status) ? WEXITSTATUS(status) : -1, WIFSIGNALED(status) ? WTERMSIG(status) : 0);
         errno = ECHILD;
         return -1;
     }
@@ -598,10 +595,10 @@ int action_handle_file(const action_t *action, const char *watch_path, const cha
         if (result >= 0 || !transient_error(saved) || attempt == action->retries || action_cancelled()) {
             break;
         }
-        audit_emit("action_retry", "retry", audit_error_code(saved), saved, strerror(saved), attempt + 1, 0,
+        char detail[128];
+        snprintf(detail, sizeof(detail), "retry %d/%d after %dms", attempt + 1, action->retries, delay);
+        audit_emit("action_retry", "retry", audit_error_code(saved), saved, detail, attempt + 1, 0,
                    NULL);
-        log_warn("%s failed for '%s': %s; retry %d/%d in %dms", action_type_name(action->type), source,
-                 strerror(saved), attempt + 1, action->retries, delay);
         if (pause_ms(delay) != 0) {
             return -1;
         }
@@ -611,9 +608,6 @@ int action_handle_file(const action_t *action, const char *watch_path, const cha
         log_info("skipped '%s': destination exists", source);
     } else if (result < 0 && errno == ECANCELED) {
         log_info("%s cancelled for '%s'", action_type_name(action->type), source);
-    } else if (result < 0) {
-        log_error("cannot %s '%s' to '%s': %s", action_type_name(action->type), source, destination,
-                  strerror(errno));
     }
     return result;
 }

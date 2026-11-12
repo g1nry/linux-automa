@@ -41,8 +41,9 @@ action_tests = executable('actions-test', 'tests/unit/actions-test.c', 'src/acti
                           dependencies: [zlib, threads], link_args: ['-Wl,--wrap=renameat2', '-Wl,--wrap=read', '-Wl,--wrap=write'])
 test('actions', action_tests)
 
-audit_tests = executable('audit-test', 'tests/unit/audit-test.c', 'src/observability/audit.c',
-                         include_directories: inc, dependencies: threads, link_args: ['-Wl,--wrap=write'])
+audit_tests = executable('audit-test', 'tests/unit/audit-test.c', 'src/observability/audit.c', 'src/observability/log.c',
+                         include_directories: inc, dependencies: threads,
+                         link_args: ['-Wl,--wrap=write', '-Wl,--wrap=fsync', '-Wl,--wrap=fdatasync'])
 test('audit', audit_tests)
 
 state_tests = executable('state-test', 'tests/unit/state-test.c', 'src/observability/state.c',

@@ -409,8 +409,7 @@ static void startup_error(const char *kind, const char *code, int error, const c
     char message[PATH_MAX + 512];
     snprintf(message, sizeof(message), "%s: %s%s%s", path ? path : "", reason,
              error ? ": " : "", error ? strerror(error) : "");
-    /* Do not rely on the audit journal being visible to the service operator. */
-    fprintf(stderr, "%s: %s\n", code, message);
+    /* audit_emit also reports failures to stderr, including before audit_open. */
     audit_emit(kind, "failure", code, error, message, 0, 0, NULL);
     errno = error;
 }
@@ -425,7 +424,11 @@ typedef struct {
 } application_t;
 
 static int application_reload(application_t *application) {
+    audit_context(application->config->watch_path, "", "", application->generation, application->dry_run,
+                  NULL);
     if (!application->config_path) {
+        audit_emit("config_reload", "failure", "FW_RELOAD_REJECTED", EINVAL,
+                   "live reload requires a configuration file (--config)", 0, 0, NULL);
         errno = EINVAL;
         return -1;
     }
@@ -436,21 +439,34 @@ static int application_reload(application_t *application) {
              "RELOADING=1\nMONOTONIC_USEC=%llu\nSTATUS=Reloading configuration",
              (unsigned long long)now.tv_sec * 1000000 + now.tv_nsec / 1000);
     if (service_notify(notification)) {
+        audit_emit("runtime_error", "failure", "FW_SYSTEMD_NOTIFY", errno,
+                   "failed to notify systemd before reload", 0, 0, NULL);
         return -1;
     }
     config_t next;
     const char *root = NULL;
-    audit_context(application->config->watch_path, "", "", application->generation, application->dry_run,
-                  NULL);
-    int error = load_watch_config(application->config_path, application->watch_path, &next, &root) ||
-                canonical_config_root(&next) || strcmp(next.watch_path, application->config->watch_path);
-    if (!error && runtime_reload(application->runtime, &next)) {
-        error = 1;
+    int error = 0;
+    const char *reason = NULL;
+    char detail[PATH_MAX + 128];
+    if (load_watch_config(application->config_path, application->watch_path, &next, &root)) {
+        reason = "configuration parsing failed; see the file/line diagnostic";
+    } else if (canonical_config_root(&next)) {
+        error = errno;
+        snprintf(detail, sizeof(detail), "cannot resolve requested watch root: %s", next.watch_path);
+        reason = detail;
+    } else if (strcmp(next.watch_path, application->config->watch_path)) {
+        error = EINVAL;
+        snprintf(detail, sizeof(detail), "watch root changed to %s; restart required", next.watch_path);
+        reason = detail;
+    } else if (runtime_reload(application->runtime, &next)) {
+        error = errno;
+        reason = "cannot allocate new immutable configuration snapshot";
     }
-    if (error) {
-        log_error("failed to reload config: %s; keeping previous rules", application->config_path);
-        audit_emit("config_reload", "failure", "FW_RELOAD_REJECTED", 0,
-                   "configuration rejected; previous generation retained", 0, 0, NULL);
+    if (reason) {
+        char message[2 * PATH_MAX + 256];
+        snprintf(message, sizeof(message), "failed to reload config: %s; keeping previous rules; %s",
+                 application->config_path, reason);
+        audit_emit("config_reload", "failure", "FW_RELOAD_REJECTED", error, message, 0, 0, NULL);
         (void)service_notify("READY=1\nSTATUS=Reload rejected; previous configuration remains active");
         errno = EINVAL;
         return -1;
@@ -461,7 +477,12 @@ static int application_reload(application_t *application) {
                   NULL);
     audit_emit("config_reload", "success", "FW_OK", 0, "new immutable configuration published", 0, 0, NULL);
     log_info("reloaded config: %s", application->config_path);
-    return service_notify("READY=1\nSTATUS=Configuration reloaded");
+    int result = service_notify("READY=1\nSTATUS=Configuration reloaded");
+    if (result) {
+        audit_emit("runtime_error", "failure", "FW_SYSTEMD_NOTIFY", errno,
+                   "configuration published, but READY notification failed", 0, 0, NULL);
+    }
+    return result;
 }
 static int application_control(void *data, const char *command, char *out, size_t size) {
     application_t *application = data;
@@ -632,7 +653,8 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
         return EXIT_USAGE;
     }
     if (service_initialize(systemd_mode)) {
-        fprintf(stderr, "FW_SYSTEMD_NOTIFY: missing or invalid systemd environment\n");
+        log_stderr(3, "FW_SYSTEMD_NOTIFY: invalid systemd environment: errno=%d (%s)", errno,
+                   strerror(errno));
         return EXIT_RUNTIME;
     }
     if (!control_path) {
@@ -661,7 +683,7 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
     }
     audit_set_sync(journal_sync);
     if (audit_open(journal_path, journal_limit)) {
-        fprintf(stderr, "FW_JOURNAL_OPEN: %s: %s\n", journal_path, strerror(errno));
+        log_stderr(3, "FW_JOURNAL_OPEN: %s: errno=%d (%s)", journal_path, errno, strerror(errno));
         return EXIT_RUNTIME;
     }
     if (load_watch_config(config_path, watch_path, &config, &watch_root) != 0) {
@@ -1208,6 +1230,7 @@ static int journal_command(int argc, char **argv, int stats) {
 }
 
 int main(int argc, char *argv[]) {
+    log_init("fileward");
     if (argc == 1 || is_help_arg(argv[1])) {
         print_help(argv[0]);
         return EXIT_OK;

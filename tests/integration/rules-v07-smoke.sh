@@ -110,7 +110,7 @@ kill -HUP "$pid"
 wait_for_log 'reloaded config:'
 printf 'data\n' > "$workdir/failure.txt"
 mv "$workdir/failure.txt" "$workdir/watch/failure.txt"
-wait_for_log "rule 'failing': action failed"
+wait_for_log 'rule="failing"'
 stop_process
 if grep -Fq 'action log: FALLBACK' "$workdir/run.log"; then exit 1; fi
 test -f "$workdir/watch/failure.txt"

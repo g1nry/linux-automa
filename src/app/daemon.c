@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #endif
 #include "daemon.h"
+#include <fileward/log.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -134,9 +135,14 @@ int redirect_output(const char *log_file_path) {
         if (devnull < 0) {
             return -1;
         }
-        dup2(devnull, STDOUT_FILENO);
-        dup2(devnull, STDERR_FILENO);
-        close(devnull);
+        if (dup2(devnull, STDOUT_FILENO) < 0 || dup2(devnull, STDERR_FILENO) < 0) {
+            int saved = errno;
+            close(devnull);
+            errno = saved;
+            return -1;
+        }
+        if (devnull != STDOUT_FILENO && devnull != STDERR_FILENO) close(devnull);
+        log_init(NULL);
         return 0;
     }
 
@@ -145,9 +151,14 @@ int redirect_output(const char *log_file_path) {
         return -1;
     }
 
-    dup2(log_fd, STDOUT_FILENO);
-    dup2(log_fd, STDERR_FILENO);
-    close(log_fd);
+    if (dup2(log_fd, STDOUT_FILENO) < 0 || dup2(log_fd, STDERR_FILENO) < 0) {
+        int saved = errno;
+        close(log_fd);
+        errno = saved;
+        return -1;
+    }
+    if (log_fd != STDOUT_FILENO && log_fd != STDERR_FILENO) close(log_fd);
+    log_init(NULL);
     return 0;
 }
 

@@ -134,7 +134,7 @@ elif sys.argv[1] in ("hang", "background"):
 
         # Existing archive remains intact; all-mode continues after an action error.
         emit(relative, b"second\n")
-        wait_for(lambda: "rule 'mover': action failed" in logs() and journal().count(b"\texec\n") == 2)
+        wait_for(lambda: 'rule="mover"' in logs() and journal().count(b"\texec\n") == 2)
         check((lab / "copied/txt/sub" / (name + ".1")).read_bytes() == b"second\n", "rename collision policy")
         check(moved.read_bytes() == b"payload\n", "default move must not overwrite")
         check((inbox / relative).read_bytes() == b"second\n", "failed move retains source")
@@ -160,7 +160,7 @@ elif sys.argv[1] in ("hang", "background"):
 
         reload('rule failure when moved_to ** exec /bin/false\n')
         emit("failure.txt")
-        wait_for(lambda: "rule 'failure': action failed" in logs())
+        wait_for(lambda: 'FW_EXEC_EXIT:' in logs() and 'rule="failure"' in logs())
         check(journal() == previous_state, "failed exec not journaled")
 
         child_file = lab / "child.pid"
@@ -173,7 +173,7 @@ elif sys.argv[1] in ("hang", "background"):
         child_file.unlink()
         reload(f'rule timeout timeout=1s when moved_to ** exec {sys.executable} "{helper}" hang "{child_file}"\n')
         emit("timeout.txt")
-        wait_for(lambda: "timed out" in logs() and "rule 'timeout': action failed" in logs())
+        wait_for(lambda: "timed out" in logs() and 'rule="timeout"' in logs())
         wait_for(lambda: child_stopped(int(child_file.read_text())))
         check(journal() == previous_state, "timed-out exec not journaled")
 
@@ -196,7 +196,7 @@ elif sys.argv[1] in ("hang", "background"):
                 start()
                 emit("cross-device.txt", b"cross-device payload")
                 target = Path(destination) / "cross-device.txt"
-                wait_for(lambda: "rule 'cross': action failed" in logs())
+                wait_for(lambda: 'FW_CROSS_DEVICE_MOVE:' in logs() and 'rule="cross"' in logs())
                 stop()
                 check(not target.exists() and not list(Path(destination).iterdir()), "EXDEV must publish nothing")
                 check((inbox / "cross-device.txt").read_bytes() == b"cross-device payload", "EXDEV must retain source")

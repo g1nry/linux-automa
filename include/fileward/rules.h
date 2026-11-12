@@ -27,7 +27,7 @@ typedef struct {
     const char *path;
     const char *basename, *extension;
     struct stat metadata;
-    int metadata_valid;
+    int metadata_valid, metadata_error;
     time_t now;
 } rule_input_t;
 

@@ -7,6 +7,9 @@ StartLimitBurst=5
 [Service]
 Type=notify
 NotifyAccess=main
+StandardOutput=journal
+StandardError=journal
+SyslogLevelPrefix=yes
 User=%i
 RuntimeDirectory=fileward-%i
 RuntimeDirectoryMode=0700

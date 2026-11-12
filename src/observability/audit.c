@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #endif
 #include <fileward/audit.h>
+#include <fileward/log.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <sys/file.h>
@@ -32,6 +33,7 @@ static char journal_path[PATH_MAX], run_id[33], host_id[80], host_name[256];
 static _Thread_local struct {
     char root[PATH_MAX], path[PATH_MAX], event[32], parent[AUDIT_ID_SIZE], rule[64], action[32];
     char destination[PATH_MAX];
+    char executable[PATH_MAX];
     int exit_code, signal, metadata_valid;
     struct stat metadata;
     unsigned generation;
@@ -188,10 +190,14 @@ int audit_open(const char *path, uint64_t max_bytes) {
 }
 
 void audit_close(void) {
+    int saved = errno;
     if (output >= 0) {
         if (fsync(output)) {
+            int error = errno;
             atomic_store(&failed, 1);
-            fprintf(stderr, "FW_JOURNAL_SYNC: %s\n", strerror(errno));
+            log_failure(3, &(log_failure_t){.kind = "audit_error", .code = "FW_JOURNAL_SYNC",
+                        .message = "fsync before closing journal failed", .error = error,
+                        .destination = journal_path, .exit_code = -1});
         }
         close(output);
         output = -1;
@@ -200,6 +206,7 @@ void audit_close(void) {
         close(lock_fd);
         lock_fd = -1;
     }
+    errno = saved;
 }
 int audit_failed(void) {
     return atomic_load(&failed);
@@ -229,10 +236,14 @@ void audit_exec_status(int exit_code, int signal) {
     context.exit_code = exit_code;
     context.signal = signal;
 }
+void audit_executable(const char *path) {
+    snprintf(context.executable, sizeof(context.executable), "%s", path ? path : "");
+}
 void audit_rule(const char *rule, const char *action) {
     context.destination[0] = 0;
     context.exit_code = -1;
     context.signal = 0;
+    context.executable[0] = 0;
     snprintf(context.rule, sizeof(context.rule), "%s", rule ? rule : "");
     snprintf(context.action, sizeof(context.action), "%s", action ? action : "");
 }
@@ -392,15 +403,34 @@ static int rotate(size_t length) {
     return output < 0 ? -1 : 0;
 }
 
+static void report(const char *kind, const char *outcome, const char *code, int error,
+                   const char *message, int attempt, long long duration, const char *id) {
+    /* The final action_result carries exec status too; avoid reporting the same
+     * command failure twice. diagnostic already has its own stderr writer. */
+    if (!strcmp(kind, "exec_status") || !strcmp(kind, "diagnostic")) return;
+    int priority = !strcmp(outcome, "failure") ? 3
+                   : (!strcmp(outcome, "warning") || !strcmp(outcome, "retry")) ? 4 : 0;
+    if (!priority) return;
+    log_failure(priority, &(log_failure_t){.kind = kind, .code = code, .error = error,
+                .message = message, .root = context.root, .path = context.path, .event = context.event,
+                .rule = context.rule, .action = context.action, .destination = context.destination,
+                .executable = context.executable, .event_id = id, .parent_id = context.parent,
+                .attempt = attempt, .exit_code = context.exit_code, .signal = context.signal,
+                .generation = context.generation, .duration_ms = duration});
+}
+
 void audit_emit(const char *kind, const char *outcome, const char *code, int error, const char *message,
                 int attempt, long long duration_ms, char id[AUDIT_ID_SIZE]) {
     int saved = errno;
+    int journal_error = 0;
+    const char *operation = NULL;
     pthread_mutex_lock(&mutex);
     if (output < 0 || atomic_load(&failed)) {
         if (id) {
             id[0] = 0;
         }
         pthread_mutex_unlock(&mutex);
+        report(kind, outcome, code, error, message, attempt, duration_ms, NULL);
         errno = saved;
         return;
     }
@@ -453,7 +483,15 @@ void audit_emit(const char *kind, const char *outcome, const char *code, int err
            ",\"errno\":%d,\"attempt\":%d,\"duration_ms\":%lld,\"config_generation\":%u,\"dry_run\":%s}\n",
            error, attempt, duration_ms, context.generation, context.dry_run ? "true" : "false");
     size_t length = record.length;
-    if (record.broken || rotate(length)) {
+    if (record.broken) {
+        journal_error = EMSGSIZE;
+        operation = "serialize record: AUDIT_RECORD_MAX exceeded";
+        atomic_store(&failed, 1);
+        goto finish;
+    }
+    if (rotate(length)) {
+        journal_error = errno;
+        operation = "rotate journal";
         atomic_store(&failed, 1);
         goto finish;
     }
@@ -464,19 +502,26 @@ void audit_emit(const char *kind, const char *outcome, const char *code, int err
             continue;
         }
         if (count <= 0) {
+            journal_error = count < 0 ? errno : EIO;
+            operation = "append record to journal";
             atomic_store(&failed, 1);
             break;
         }
         done += (size_t)count;
     }
     if (!atomic_load(&failed) && sync_records && fdatasync(output)) {
+        journal_error = errno;
+        operation = "fdatasync journal record";
         atomic_store(&failed, 1);
     }
 finish:
-    if (atomic_load(&failed)) {
-        fprintf(stderr, "FW_JOURNAL_WRITE: audit output failed; stopping execution\n");
-    }
     pthread_mutex_unlock(&mutex);
+    report(kind, outcome, code, error, message, attempt, duration_ms, event_id);
+    if (journal_error) {
+        log_failure(3, &(log_failure_t){.kind = "audit_error", .code = "FW_JOURNAL_WRITE",
+                    .message = operation, .error = journal_error, .destination = journal_path,
+                    .event_id = event_id, .exit_code = -1});
+    }
     errno = saved;
 }
 
