@@ -1,4 +1,4 @@
-<!-- Inside <ossec_config> on the endpoint. Replace the absolute path. -->
+<!-- Внутри <ossec_config> на узле Fileward. Укажите фактический абсолютный путь JSONL. -->
 <localfile>
   <location>/home/USER/.local/state/fileward/events.jsonl</location>
   <log_format>json</log_format>

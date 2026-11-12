@@ -160,7 +160,9 @@ static void state_success(runtime_t *runtime, job_t *job, const char *action) {
                     ? errno
                     : 0;
     if (error) {
-        audit_emit("state_error", "failure", "FW_STATE_WRITE", error, strerror(error), 0, 0, NULL);
+        char detail[PATH_MAX + 64];
+        snprintf(detail, sizeof(detail), "cannot append legacy state journal: %s", runtime->options.state_file);
+        audit_emit("state_error", "failure", "FW_STATE_WRITE", error, detail, 0, 0, NULL);
     }
 }
 static void execute_job(runtime_t *runtime, job_t *job) {
@@ -170,7 +172,11 @@ static void execute_job(runtime_t *runtime, job_t *job) {
     prepare_rule_input(config->watch_path, job->event.filename, job->event.type, &input);
     audit_metadata(input.metadata_valid ? &input.metadata : NULL);
     if (job->have_stat && !input.metadata_valid) {
-        audit_emit("event_cancelled", "skipped", "FW_FILE_NOT_FOUND", ENOENT, "file vanished before dispatch",
+        int error = input.metadata_error ? input.metadata_error : ENOENT;
+        int vanished = error == ENOENT || error == ENOTDIR;
+        audit_emit("event_cancelled", vanished ? "skipped" : "failure",
+                   vanished ? "FW_FILE_NOT_FOUND" : audit_error_code(error), error,
+                   "cannot inspect source before dispatch",
                    0, 0, NULL);
         return;
     }
@@ -213,21 +219,22 @@ static void execute_job(runtime_t *runtime, job_t *job) {
             runtime->action_failures++;
             pthread_mutex_unlock(&runtime->mutex);
         }
+        const char *code = status < 0 ? action_last_error_code(error)
+                           : status == ACTION_SKIPPED ? "FW_CONFLICT_SKIP" : "FW_OK";
+        int process_exit = !strcmp(code, "FW_EXEC_EXIT") || !strcmp(code, "FW_EXEC_SIGNAL");
+        const char *message = !strcmp(code, "FW_EXEC_EXIT") ? "command exited with a non-zero status"
+                              : !strcmp(code, "FW_EXEC_SIGNAL") ? "command terminated by a signal"
+                              : !strcmp(code, "FW_EXEC_TIMEOUT") ? "command timed out"
+                              : status < 0 ? strerror(error) : "action completed";
         audit_emit("action_result",
                    status < 0                 ? (error == ECANCELED ? "cancelled" : "failure")
                    : status == ACTION_SKIPPED ? "skipped"
                    : runtime->options.dry_run ? "dry_run"
                                               : "success",
-                   status < 0                 ? action_last_error_code(error)
-                   : status == ACTION_SKIPPED ? "FW_CONFLICT_SKIP"
-                                              : "FW_OK",
-                   error, status < 0 ? strerror(error) : "action completed", action_attempts(),
+                   code, process_exit ? 0 : error, message, action_attempts(),
                    clock_ms() - start, NULL);
         if (status < 0 && error == ECANCELED) {
             log_info("rule '%s': action cancelled for %s", rule->name, job->event.filename);
-        } else if (status < 0) {
-            log_error("rule '%s': action failed for %s: %s", rule->name, job->event.filename,
-                      strerror(error));
         } else if (!status) {
             state_success(runtime, job, action_type_name(rule->action.type));
         }
@@ -338,7 +345,9 @@ runtime_t *runtime_create(const config_t *config, const runtime_options_t *optio
     }
     pthread_sigmask(SIG_SETMASK, &original, NULL);
     if (runtime->started != options->workers) {
+        int error = errno;
         runtime_destroy(runtime);
+        errno = error;
         return NULL;
     }
     return runtime;
@@ -389,6 +398,7 @@ int runtime_observe(const file_event_t *event, void *data) {
         audit_emit("event_dropped", "failure",
                    event->type == EVENT_OVERFLOW ? "FW_INOTIFY_OVERFLOW" : "FW_WATCH_LOST", 0,
                    "filesystem observation is incomplete", 0, 0, NULL);
+        if (event->type == EVENT_WATCH_LOST) errno = ESTALE;
         return event->type == EVENT_WATCH_LOST ? -1 : 0;
     }
     return observe_event(event, runtime, NULL);
@@ -443,15 +453,21 @@ static int observe_event(const file_event_t *event, runtime_t *runtime, const ru
         }
     }
     if (runtime->pending_count + runtime->active_count >= runtime->options.capacity) {
+        char detail[160];
+        snprintf(detail, sizeof(detail), "action queue is full: queued=%u active=%u capacity=%u",
+                 runtime->pending_count, runtime->active_count, runtime->options.capacity);
         runtime->dropped++;
         pthread_mutex_unlock(&runtime->mutex);
-        audit_emit("event_dropped", "failure", "FW_QUEUE_FULL", 0, "bounded action queue is full", 0, 0,
+        audit_emit("event_dropped", "failure", "FW_QUEUE_FULL", 0, detail, 0, 0,
                    NULL);
         return 0;
     }
     job_t *job = calloc(1, sizeof(*job));
     if (!job) {
+        int error = errno;
         pthread_mutex_unlock(&runtime->mutex);
+        audit_emit("runtime_error", "failure", "FW_MEMORY_LIMIT", error, "cannot allocate event job", 0, 0, NULL);
+        errno = error;
         return -1;
     }
     job->event = *event;
@@ -495,8 +511,10 @@ void runtime_tick(runtime_t *runtime) {
         int discard = 0, ready = 0;
         context_for(job, runtime->options.dry_run);
         if (stat_error) {
-            audit_emit("event_cancelled", "skipped", "FW_FILE_NOT_FOUND", stat_error,
-                       "file vanished before readiness", 0, 0, NULL);
+            int vanished = stat_error == ENOENT || stat_error == ENOTDIR;
+            audit_emit("event_cancelled", vanished ? "skipped" : "failure",
+                       vanished ? "FW_FILE_NOT_FOUND" : audit_error_code(stat_error), stat_error,
+                       "cannot inspect source before readiness", 0, now - job->received, NULL);
             discard = 1;
         } else if (job->have_stat &&
                    (current.st_ino != job->last.st_ino || current.st_dev != job->last.st_dev)) {
@@ -504,8 +522,12 @@ void runtime_tick(runtime_t *runtime) {
                        "file replaced before readiness", 0, 0, NULL);
             discard = 1;
         } else if (now - job->received >= runtime->options.ready_timeout_ms) {
+            char detail[160];
+            snprintf(detail, sizeof(detail), "file did not become ready: timeout_ms=%u settle_ms=%u mode=%s",
+                     runtime->options.ready_timeout_ms, runtime->options.settle_ms,
+                     runtime->options.ready_mode == 1 ? "stable" : "close-write");
             audit_emit("event_cancelled", "failure", "FW_READY_TIMEOUT", ETIMEDOUT,
-                       "file did not become ready", 0, 0, NULL);
+                       detail, 0, now - job->received, NULL);
             discard = 1;
         } else {
             if (!job->have_stat || !unchanged(&current, &job->last)) {

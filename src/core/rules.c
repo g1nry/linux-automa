@@ -4,6 +4,7 @@
 
 #include <fileward/rules.h>
 #include <fileward/glob.h>
+#include <errno.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -23,6 +24,9 @@ void prepare_rule_input(const char *root, const char *path, event_type_t event, 
     int length = snprintf(full_path, sizeof(full_path), "%s/%s", root, path);
     if (length >= 0 && (size_t)length < sizeof(full_path)) {
         input->metadata_valid = lstat(full_path, &input->metadata) == 0;
+        input->metadata_error = input->metadata_valid ? 0 : errno;
+    } else {
+        input->metadata_error = ENAMETOOLONG;
     }
 }
 

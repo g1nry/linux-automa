@@ -114,7 +114,7 @@ static void print_usage(const char *program_name) {
     fprintf(stderr, "       %s stats [--journal <file>]\n", program_name);
     fprintf(stderr, "       %s actions\n", program_name);
     fprintf(stderr, "       %s test [--config <file>] <path>\n", program_name);
-    fprintf(stderr, "       %s validate --config <file>\n", program_name);
+    fprintf(stderr, "       %s validate --config <file> [--check-watch]\n", program_name);
     fprintf(stderr, "       %s explain --config <file> [--event <event>] <path>\n", program_name);
 }
 
@@ -155,6 +155,7 @@ static void print_help(const char *program_name) {
     fprintf(stderr, "  --settle-ms 0..60000 --ready-timeout-ms 100..3600000\n");
     fprintf(stderr, "\nOptions:\n");
     fprintf(stderr, "  --config <file>    load rules from a config file\n");
+    fprintf(stderr, "  --check-watch      also check watch directory existence and access in validate\n");
     fprintf(stderr, "  --dry-run          do not execute actions when running\n");
     fprintf(stderr, "  --daemon           detach and run in the background\n");
     fprintf(stderr, "  --pidfile <file>   write/read the daemon pidfile\n");
@@ -381,6 +382,38 @@ static int canonical_config_root(config_t *config) {
     return 0;
 }
 
+/* Syntax validation remains usable before deployment. The optional preflight and
+ * runtime startup share the same checks, without creating any watches or files. */
+static int check_watch_root(config_t *config) {
+    char root[PATH_MAX];
+    if (!realpath(config->watch_path, root)) {
+        return -1;
+    }
+    struct stat st;
+    if (stat(root, &st)) {
+        return -1;
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        errno = ENOTDIR;
+        return -1;
+    }
+    if (access(root, R_OK | X_OK)) {
+        return -1;
+    }
+    snprintf(config->watch_path, sizeof(config->watch_path), "%s", root);
+    return 0;
+}
+
+static void startup_error(const char *kind, const char *code, int error, const char *path,
+                          const char *reason) {
+    char message[PATH_MAX + 512];
+    snprintf(message, sizeof(message), "%s: %s%s%s", path ? path : "", reason,
+             error ? ": " : "", error ? strerror(error) : "");
+    /* audit_emit also reports failures to stderr, including before audit_open. */
+    audit_emit(kind, "failure", code, error, message, 0, 0, NULL);
+    errno = error;
+}
+
 typedef struct {
     runtime_t *runtime;
     config_t *config;
@@ -391,7 +424,11 @@ typedef struct {
 } application_t;
 
 static int application_reload(application_t *application) {
+    audit_context(application->config->watch_path, "", "", application->generation, application->dry_run,
+                  NULL);
     if (!application->config_path) {
+        audit_emit("config_reload", "failure", "FW_RELOAD_REJECTED", EINVAL,
+                   "live reload requires a configuration file (--config)", 0, 0, NULL);
         errno = EINVAL;
         return -1;
     }
@@ -402,21 +439,34 @@ static int application_reload(application_t *application) {
              "RELOADING=1\nMONOTONIC_USEC=%llu\nSTATUS=Reloading configuration",
              (unsigned long long)now.tv_sec * 1000000 + now.tv_nsec / 1000);
     if (service_notify(notification)) {
+        audit_emit("runtime_error", "failure", "FW_SYSTEMD_NOTIFY", errno,
+                   "failed to notify systemd before reload", 0, 0, NULL);
         return -1;
     }
     config_t next;
     const char *root = NULL;
-    audit_context(application->config->watch_path, "", "", application->generation, application->dry_run,
-                  NULL);
-    int error = load_watch_config(application->config_path, application->watch_path, &next, &root) ||
-                canonical_config_root(&next) || strcmp(next.watch_path, application->config->watch_path);
-    if (!error && runtime_reload(application->runtime, &next)) {
-        error = 1;
+    int error = 0;
+    const char *reason = NULL;
+    char detail[PATH_MAX + 128];
+    if (load_watch_config(application->config_path, application->watch_path, &next, &root)) {
+        reason = "configuration parsing failed; see the file/line diagnostic";
+    } else if (canonical_config_root(&next)) {
+        error = errno;
+        snprintf(detail, sizeof(detail), "cannot resolve requested watch root: %s", next.watch_path);
+        reason = detail;
+    } else if (strcmp(next.watch_path, application->config->watch_path)) {
+        error = EINVAL;
+        snprintf(detail, sizeof(detail), "watch root changed to %s; restart required", next.watch_path);
+        reason = detail;
+    } else if (runtime_reload(application->runtime, &next)) {
+        error = errno;
+        reason = "cannot allocate new immutable configuration snapshot";
     }
-    if (error) {
-        log_error("failed to reload config: %s; keeping previous rules", application->config_path);
-        audit_emit("config_reload", "failure", "FW_RELOAD_REJECTED", 0,
-                   "configuration rejected; previous generation retained", 0, 0, NULL);
+    if (reason) {
+        char message[2 * PATH_MAX + 256];
+        snprintf(message, sizeof(message), "failed to reload config: %s; keeping previous rules; %s",
+                 application->config_path, reason);
+        audit_emit("config_reload", "failure", "FW_RELOAD_REJECTED", error, message, 0, 0, NULL);
         (void)service_notify("READY=1\nSTATUS=Reload rejected; previous configuration remains active");
         errno = EINVAL;
         return -1;
@@ -427,7 +477,12 @@ static int application_reload(application_t *application) {
                   NULL);
     audit_emit("config_reload", "success", "FW_OK", 0, "new immutable configuration published", 0, 0, NULL);
     log_info("reloaded config: %s", application->config_path);
-    return service_notify("READY=1\nSTATUS=Configuration reloaded");
+    int result = service_notify("READY=1\nSTATUS=Configuration reloaded");
+    if (result) {
+        audit_emit("runtime_error", "failure", "FW_SYSTEMD_NOTIFY", errno,
+                   "configuration published, but READY notification failed", 0, 0, NULL);
+    }
+    return result;
 }
 static int application_control(void *data, const char *command, char *out, size_t size) {
     application_t *application = data;
@@ -598,7 +653,8 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
         return EXIT_USAGE;
     }
     if (service_initialize(systemd_mode)) {
-        fprintf(stderr, "FW_SYSTEMD_NOTIFY: missing or invalid systemd environment\n");
+        log_stderr(3, "FW_SYSTEMD_NOTIFY: invalid systemd environment: errno=%d (%s)", errno,
+                   strerror(errno));
         return EXIT_RUNTIME;
     }
     if (!control_path) {
@@ -627,35 +683,37 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
     }
     audit_set_sync(journal_sync);
     if (audit_open(journal_path, journal_limit)) {
-        fprintf(stderr, "FW_JOURNAL_OPEN: %s: %s\n", journal_path, strerror(errno));
+        log_stderr(3, "FW_JOURNAL_OPEN: %s: errno=%d (%s)", journal_path, errno, strerror(errno));
         return EXIT_RUNTIME;
     }
     if (load_watch_config(config_path, watch_path, &config, &watch_root) != 0) {
-        fprintf(stderr, "Failed to load watch configuration.\n");
-        audit_emit("config_load", "failure", "FW_CONFIG_INVALID", 0, "configuration rejected", 0, 0, NULL);
+        audit_context(config.watch_path, "", "", 1, dry_run, NULL);
+        startup_error("config_load", "FW_CONFIG_INVALID", 0, config_path, "configuration rejected");
         audit_close();
         return EXIT_CONFIG;
     }
 
-    if (canonical_config_root(&config)) {
-        audit_emit("watcher_error", "failure", "FW_WATCHER_START", errno, "watch root cannot be resolved", 0,
-                   0, NULL);
+    audit_context(config.watch_path, "", "", 1, dry_run, NULL);
+    if (check_watch_root(&config)) {
+        startup_error("watcher_error", "FW_WATCHER_START", errno, watch_root,
+                      "watch root is not an accessible directory");
         audit_close();
         return EXIT_RUNTIME;
     }
+    audit_context(config.watch_path, "", "", 1, dry_run, NULL);
     const char *artifacts[] = {journal_path, state_file_path, log_file_path, control_path};
     for (unsigned i = 0; i < sizeof(artifacts) / sizeof(artifacts[0]); i++) {
         char relative[PATH_MAX];
         if (artifacts[i] && path_within_root(watch_root, artifacts[i], relative, sizeof(relative)) == 1) {
-            audit_emit("config_load", "failure", "FW_OUTPUT_INSIDE_WATCH", 0,
-                       "journal/log/state must be outside the watched tree", 0, 0, NULL);
-            fprintf(stderr, "FW_OUTPUT_INSIDE_WATCH: %s\n", artifacts[i]);
+            startup_error("config_load", "FW_OUTPUT_INSIDE_WATCH", 0, artifacts[i],
+                          "journal/log/state/socket must be outside the watched tree");
             audit_close();
             return EXIT_CONFIG;
         }
     }
     if (!daemon_mode && log_file_path != NULL && redirect_output(log_file_path) != 0) {
-        fprintf(stderr, "failed to open log file '%s': %s\n", log_file_path, strerror(errno));
+        startup_error("runtime_error", "FW_LOG_OPEN", errno, log_file_path, "log file could not be opened");
+        audit_close();
         return EXIT_RUNTIME;
     }
 
@@ -684,9 +742,8 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
 
     control = control_open(control_path);
     if (!control) {
-        audit_emit("runtime_error", "failure", "FW_CONTROL_LISTEN", errno,
-                   "control socket could not be opened", 0, 0, NULL);
-        fprintf(stderr, "FW_CONTROL_LISTEN: %s: %s\n", control_path, strerror(errno));
+        startup_error("runtime_error", "FW_CONTROL_LISTEN", errno, control_path,
+                      "control socket could not be opened");
         notify_startup(0);
         release_pidfile();
         audit_close();
@@ -694,8 +751,8 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
     }
     char relative_control[PATH_MAX];
     if (path_within_root(watch_root, control_path, relative_control, sizeof(relative_control)) == 1) {
-        audit_emit("config_load", "failure", "FW_OUTPUT_INSIDE_WATCH", 0,
-                   "control socket must be outside watch", 0, 0, NULL);
+        startup_error("config_load", "FW_OUTPUT_INSIDE_WATCH", 0, control_path,
+                      "control socket must be outside watch");
         control_close(control);
         notify_startup(0);
         release_pidfile();
@@ -703,8 +760,8 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
         return EXIT_CONFIG;
     }
     if (start_watcher(watch_root) != 0) {
-        audit_emit("watcher_error", "failure", "FW_WATCHER_START", errno,
-                   "watch root could not be initialized", 0, 0, NULL);
+        startup_error("watcher_error", "FW_WATCHER_START", errno, watch_root,
+                      "watch root could not be initialized");
         audit_close();
         control_close(control);
         notify_startup(0);
@@ -716,8 +773,7 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
     options.state_file = state_file_path;
     runtime = runtime_create(&config, &options);
     if (!runtime) {
-        audit_emit("runtime_error", "failure", "FW_WORKER_START", errno, "worker pool could not start", 0, 0,
-                   NULL);
+        startup_error("runtime_error", "FW_WORKER_START", errno, watch_root, "worker pool could not start");
         stop_watcher();
         control_close(control);
         notify_startup(0);
@@ -744,8 +800,7 @@ static int run_command(int argc, char *argv[], int daemon_mode) {
                                  .dry_run = dry_run};
     clock_gettime(CLOCK_MONOTONIC, &application.started);
     if (service_notify("READY=1\nSTATUS=Watching files; worker pool and control socket ready")) {
-        audit_emit("runtime_error", "failure", "FW_SYSTEMD_NOTIFY", errno, "readiness notification failed", 0,
-                   0, NULL);
+        startup_error("runtime_error", "FW_SYSTEMD_NOTIFY", errno, watch_root, "readiness notification failed");
         runtime_destroy(runtime);
         control_close(control);
         stop_watcher();
@@ -1094,17 +1149,34 @@ static int explain_command(int argc, char *argv[]) {
 }
 
 static int validate_command(int argc, char *argv[]) {
+    const char *config_path = NULL;
+    int check_watch = 0;
     if (argc == 1 && is_help_arg(argv[0])) {
-        fprintf(stderr, "Usage: fileward validate --config <file>\n");
+        fprintf(stderr, "Usage: fileward validate --config <file> [--check-watch]\n");
         return EXIT_OK;
     }
-    if (argc != 2 || strcmp(argv[0], "--config") != 0) {
-        fprintf(stderr, "Usage: fileward validate --config <file>\n");
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--config") && !config_path && i + 1 < argc) {
+            config_path = argv[++i];
+        } else if (!strcmp(argv[i], "--check-watch") && !check_watch) {
+            check_watch = 1;
+        } else {
+            fprintf(stderr, "Usage: fileward validate --config <file> [--check-watch]\n");
+            return EXIT_USAGE;
+        }
+    }
+    if (!config_path) {
+        fprintf(stderr, "Usage: fileward validate --config <file> [--check-watch]\n");
         return EXIT_USAGE;
     }
     config_t config;
-    if (load_config(argv[1], &config) != 0) {
+    if (load_config(config_path, &config) != 0) {
         return EXIT_CONFIG;
+    }
+    if (check_watch && check_watch_root(&config)) {
+        startup_error("watcher_error", "FW_WATCHER_START", errno, config.watch_path,
+                      "watch root is not an accessible directory");
+        return EXIT_RUNTIME;
     }
     int enabled = 0;
     for (int i = 0; i < config.rule_count; i++) {
@@ -1112,8 +1184,9 @@ static int validate_command(int argc, char *argv[]) {
     }
     printf(
         "config valid: %s\nwatch root: %s\nrules: %d (%d enabled, %d disabled)\nmode: %s\npath filters: %d\n",
-        argv[1], config.watch_path, config.rule_count, enabled, config.rule_count - enabled,
+        config_path, config.watch_path, config.rule_count, enabled, config.rule_count - enabled,
         config.first_match ? "first" : "all", config.filter_count);
+    printf("watch check: %s\n", check_watch ? "accessible directory" : "not requested (syntax only)");
     return EXIT_OK;
 }
 
@@ -1157,6 +1230,7 @@ static int journal_command(int argc, char **argv, int stats) {
 }
 
 int main(int argc, char *argv[]) {
+    log_init("fileward");
     if (argc == 1 || is_help_arg(argv[1])) {
         print_help(argv[0]);
         return EXIT_OK;

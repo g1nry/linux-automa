@@ -82,8 +82,63 @@ with tempfile.TemporaryDirectory(prefix='fw-systemd $ %-') as folder:
         assert third['status'] == 'healthy'
         records = [json.loads(line) for line in settings['journal'].read_text().splitlines()]
         assert any(r['kind'] == 'action_result' and r['outcome'] == 'success' for r in records)
+        subtree = inbox / 'subtree'; subtree.mkdir()
+        wait_for(lambda: health() and health()['watched_directories'] == 2)
+        subtree.rename(root / 'moved-subtree')
+        def warning():
+            output = subprocess.check_output(['journalctl', '--user', '-u', unit_name,
+                                              '-p', 'warning', '-o', 'json', '--no-pager'], text=True)
+            return next((json.loads(line) for line in output.splitlines()
+                         if 'FW_DIRECTORY_REWATCH:' in json.loads(line)['MESSAGE']), None)
+        assert wait_for(warning)['PRIORITY'] == '4'
+        # Настоящий уровень journald, а не только слово error в тексте сообщения.
+        config.write_text(f'watch {inbox}\nrule bad when moved_to ** exec /bin/false\n')
+        ctl('reload', unit_name)
+        staged = root / 'staged'; staged.write_text('test')
+        staged.rename(inbox / 'failed-action.txt')
+        wait_for(lambda: health() and health()['action_failures'] == 1)
+
+        def error_entries():
+            output = subprocess.check_output(['journalctl', '--user', '-u', unit_name,
+                                              '-p', 'err', '-o', 'json', '--no-pager'], text=True)
+            return [json.loads(line) for line in output.splitlines()]
+
+        def failed_action():
+            return next((entry for entry in error_entries()
+                         if 'FW_EXEC_EXIT:' in entry['MESSAGE'] and 'failed-action.txt' in entry['MESSAGE']), None)
+
+        entry = wait_for(failed_action)
+        assert entry['PRIORITY'] == '3' and not entry['MESSAGE'].startswith('<3>'), entry
+        for field in ('rule="bad"', 'action="exec"', 'exit_code=1', 'executable="/bin/false"',
+                      'event_id=', 'parent_id='):
+            assert field in entry['MESSAGE'], entry
+        assert 'No child processes' not in entry['MESSAGE'], entry
         ctl('stop', unit_name)
         assert not control.exists()
+        # Синтаксически верный watch может быть недоступен. Причина должна быть
+        # в journald и JSONL основного процесса, даже когда ExecStartPre успешен.
+        unit.write_text(unit.read_text().replace('Restart=on-failure', 'Restart=no'))
+        ctl('daemon-reload')
+        blocked = root / 'blocked'; blocked.mkdir()
+        failures = [(root / 'missing/inbox', 2)]
+        if os.geteuid() != 0:
+            blocked.chmod(0)
+            failures.append((blocked, 13))
+        try:
+            for watch, error in failures:
+                config.write_text(f'watch {watch}\nwhen created ** log\n')
+                ctl('reset-failed', unit_name, check=False)
+                assert ctl('start', unit_name, check=False).returncode != 0
+                output = subprocess.check_output(
+                    ['journalctl', '--user', '-u', unit_name, '--no-pager', '-n', '100'], text=True)
+                assert 'FW_WATCHER_START:' in output and str(watch) in output and os.strerror(error) in output, output
+                records = [json.loads(line) for line in settings['journal'].read_text().splitlines()]
+                assert any(r['code'] == 'FW_WATCHER_START' and r['watch_root'] == str(watch)
+                           and r['errno'] == error and str(watch) in r['message'] for r in records)
+                wait_for(lambda: any('FW_WATCHER_START:' in entry['MESSAGE'] and str(watch) in entry['MESSAGE']
+                                     and entry['PRIORITY'] == '3' for entry in error_entries()))
+        finally:
+            blocked.chmod(0o700)
     except BaseException:
         print(ctl('status', unit_name, check=False).stdout, file=sys.stderr)
         print(subprocess.run(['journalctl', '--user', '-u', unit_name, '-n', '50', '--no-pager'], capture_output=True, text=True).stdout, file=sys.stderr)

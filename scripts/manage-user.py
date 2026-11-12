@@ -91,7 +91,9 @@ def install(settings, binary, no_start, source):
         content = candidate.read_bytes()
         snapshot = Path(folder) / 'validated.conf'
         snapshot.write_bytes(content)
-        subprocess.run([str(binary.resolve()), 'validate', '--config', str(snapshot)], check=True)
+        validation = subprocess.run([str(binary.resolve()), 'validate', '--config', str(snapshot),
+                                     '--check-watch'], check=True, text=True, capture_output=True,
+                                    cwd=Path.home())
     settings['journal'].parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     settings['control'].parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     if new_config:
@@ -105,13 +107,18 @@ def install(settings, binary, no_start, source):
     atomic_write(settings['binary'], binary.read_bytes(), 0o755)
     atomic_write(settings['unit'], unit_content, 0o644)
     print('Установлен бинарь:', settings['binary'])
-    print('Конфигурация сохранена:', settings['config'])
+    print('Создана новая конфигурация:' if new_config else 'Используется существующая конфигурация:',
+          settings['config'])
+    print(validation.stdout.replace(str(snapshot), str(settings['config'])), end='')
+    print('JSON-журнал:', settings['journal'])
     if no_start:
         print('Запуск systemd пропущен (--no-start).')
         return
     ctl('daemon-reload')
     ctl('enable', 'fileward.service')
     # restart обновляет и уже работающую службу, в отличие от enable --now.
+    if subprocess.run(['systemctl', '--user', 'is-failed', '--quiet', 'fileward.service']).returncode == 0:
+        ctl('reset-failed', 'fileward.service')
     ctl('restart', 'fileward.service')
     subprocess.run([str(settings['binary']), 'health', '--socket', str(settings['control'])], check=True)
     print('Fileward запущен. Логи: journalctl --user -u fileward -f')
@@ -141,6 +148,8 @@ def main():
         elif args.command == 'uninstall': uninstall(settings, args.no_start)
         else: return subprocess.run([str(settings['binary']), args.command, '--socket', str(settings['control'])]).returncode
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        if isinstance(error, subprocess.CalledProcessError) and error.stderr:
+            print(error.stderr, end='' if error.stderr.endswith('\n') else '\n', file=sys.stderr)
         print('Ошибка:', error, file=sys.stderr)
         return 1
     return 0

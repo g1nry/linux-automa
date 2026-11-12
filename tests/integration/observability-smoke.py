@@ -283,6 +283,9 @@ elif sys.argv[1] == "record":
                 for i in range(40): (fault_inbox / f'disk-failure-{i}').write_text('x')
                 check(fault.wait(timeout=5) == 3, 'audit write failure must exit 3')
                 check('FW_JOURNAL_WRITE' in fault_log.read_text(), 'missing write-failure diagnostic')
+                check('errno=' in fault_log.read_text() and 'File too large' in fault_log.read_text(),
+                      'missing actual journal failure cause')
+                check(str(root / 'fault.jsonl') in fault_log.read_text(), 'missing failed journal path')
             finally:
                 if fault.poll() is None: fault.kill(); fault.wait()
         # A partial final record is explicitly rejected on the next startup.

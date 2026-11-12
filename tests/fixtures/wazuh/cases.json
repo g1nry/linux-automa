@@ -1,0 +1,582 @@
+[
+  {
+    "name": "action-success",
+    "record": {
+      "schema_version": 1,
+      "sequence": 12,
+      "timestamp": "2026-11-12T13:49:40.902Z",
+      "provider": "fileward",
+      "program_version": "1.1.1",
+      "daemon_pid": 1234,
+      "event_id": "00000000000000000000000000000002-1",
+      "run_id": "00000000000000000000000000000002",
+      "parent_id": "00000000000000000000000000000002-0",
+      "host_id": "00000000000000000000000000000001",
+      "host_name": "fileward-lab",
+      "kind": "action_result",
+      "outcome": "success",
+      "code": "FW_OK",
+      "event_type": "moved_to",
+      "watch_root": "/tmp/fileward-lab/inbox",
+      "relative_path": "success.pdf",
+      "path_base64": "c3VjY2Vzcy5wZGY=",
+      "rule_name": "success",
+      "action": "log",
+      "message": "action completed",
+      "destination": "",
+      "destination_base64": "",
+      "file_size": 7,
+      "file_mode": 33204,
+      "mtime_unix": 1794491380,
+      "exit_code": -1,
+      "signal": 0,
+      "errno": 0,
+      "attempt": 1,
+      "duration_ms": 0,
+      "config_generation": 1,
+      "dry_run": false
+    },
+    "default": {
+      "id": 86600,
+      "level": 0,
+      "groups": [
+        "ids",
+        "suricata"
+      ]
+    },
+    "lab": {
+      "id": 100805,
+      "level": 3,
+      "groups": [
+        "fileward"
+      ]
+    }
+  },
+  {
+    "name": "action-failure",
+    "record": {
+      "schema_version": 1,
+      "sequence": 22,
+      "timestamp": "2026-11-12T13:49:40.990Z",
+      "provider": "fileward",
+      "program_version": "1.1.1",
+      "daemon_pid": 1234,
+      "event_id": "00000000000000000000000000000002-2",
+      "run_id": "00000000000000000000000000000002",
+      "parent_id": "00000000000000000000000000000002-0",
+      "host_id": "00000000000000000000000000000001",
+      "host_name": "fileward-lab",
+      "kind": "action_result",
+      "outcome": "failure",
+      "code": "FW_EXEC_EXIT",
+      "event_type": "moved_to",
+      "watch_root": "/tmp/fileward-lab/inbox",
+      "relative_path": "failure.pdf",
+      "path_base64": "ZmFpbHVyZS5wZGY=",
+      "rule_name": "failure",
+      "action": "exec",
+      "message": "command exited with a non-zero status",
+      "destination": "",
+      "destination_base64": "",
+      "file_size": 7,
+      "file_mode": 33204,
+      "mtime_unix": 1794491380,
+      "exit_code": 1,
+      "signal": 0,
+      "errno": 0,
+      "attempt": 1,
+      "duration_ms": 26,
+      "config_generation": 1,
+      "dry_run": false
+    },
+    "default": {
+      "id": 100801,
+      "level": 5,
+      "groups": [
+        "fileward"
+      ]
+    },
+    "lab": {
+      "id": 100801,
+      "level": 5,
+      "groups": [
+        "fileward"
+      ]
+    }
+  },
+  {
+    "name": "queue-loss",
+    "record": {
+      "schema_version": 1,
+      "sequence": 44,
+      "timestamp": "2026-11-12T13:49:41.380Z",
+      "provider": "fileward",
+      "program_version": "1.1.1",
+      "daemon_pid": 1234,
+      "event_id": "00000000000000000000000000000002-3",
+      "run_id": "00000000000000000000000000000002",
+      "parent_id": "00000000000000000000000000000002-0",
+      "host_id": "00000000000000000000000000000001",
+      "host_name": "fileward-lab",
+      "kind": "event_dropped",
+      "outcome": "failure",
+      "code": "FW_QUEUE_FULL",
+      "event_type": "moved_to",
+      "watch_root": "/tmp/fileward-lab/inbox",
+      "relative_path": "pressure-2",
+      "path_base64": "cHJlc3N1cmUtMg==",
+      "rule_name": "",
+      "action": "",
+      "message": "bounded action queue is full",
+      "destination": "",
+      "destination_base64": "",
+      "file_size": null,
+      "file_mode": null,
+      "mtime_unix": null,
+      "exit_code": -1,
+      "signal": 0,
+      "errno": 0,
+      "attempt": 0,
+      "duration_ms": 0,
+      "config_generation": 1,
+      "dry_run": false
+    },
+    "default": {
+      "id": 100802,
+      "level": 7,
+      "groups": [
+        "fileward"
+      ]
+    },
+    "lab": {
+      "id": 100802,
+      "level": 7,
+      "groups": [
+        "fileward"
+      ]
+    }
+  },
+  {
+    "name": "readiness-failure",
+    "record": {
+      "schema_version": 1,
+      "sequence": 38,
+      "timestamp": "2026-11-12T13:49:41.362Z",
+      "provider": "fileward",
+      "program_version": "1.1.1",
+      "daemon_pid": 1234,
+      "event_id": "00000000000000000000000000000002-4",
+      "run_id": "00000000000000000000000000000002",
+      "parent_id": "00000000000000000000000000000002-0",
+      "host_id": "00000000000000000000000000000001",
+      "host_name": "fileward-lab",
+      "kind": "event_cancelled",
+      "outcome": "failure",
+      "code": "FW_READY_TIMEOUT",
+      "event_type": "created",
+      "watch_root": "/tmp/fileward-lab/inbox",
+      "relative_path": "held.txt",
+      "path_base64": "aGVsZC50eHQ=",
+      "rule_name": "",
+      "action": "",
+      "message": "file did not become ready",
+      "destination": "",
+      "destination_base64": "",
+      "file_size": 4,
+      "file_mode": 33204,
+      "mtime_unix": 1794491381,
+      "exit_code": -1,
+      "signal": 0,
+      "errno": 110,
+      "attempt": 0,
+      "duration_ms": 0,
+      "config_generation": 1,
+      "dry_run": false
+    },
+    "default": {
+      "id": 100803,
+      "level": 5,
+      "groups": [
+        "fileward"
+      ]
+    },
+    "lab": {
+      "id": 100803,
+      "level": 5,
+      "groups": [
+        "fileward"
+      ]
+    }
+  },
+  {
+    "name": "daemon-started-empty-event",
+    "record": {
+      "schema_version": 1,
+      "sequence": 2,
+      "timestamp": "2026-11-12T13:49:40.834Z",
+      "provider": "fileward",
+      "program_version": "1.1.1",
+      "daemon_pid": 1234,
+      "event_id": "00000000000000000000000000000002-5",
+      "run_id": "00000000000000000000000000000002",
+      "parent_id": "",
+      "host_id": "00000000000000000000000000000001",
+      "host_name": "fileward-lab",
+      "kind": "daemon_started",
+      "outcome": "success",
+      "code": "FW_OK",
+      "event_type": "",
+      "watch_root": "/tmp/fileward-lab/inbox",
+      "relative_path": "",
+      "path_base64": "",
+      "rule_name": "",
+      "action": "",
+      "message": "watcher and workers ready",
+      "destination": "",
+      "destination_base64": "",
+      "file_size": null,
+      "file_mode": null,
+      "mtime_unix": null,
+      "exit_code": -1,
+      "signal": 0,
+      "errno": 0,
+      "attempt": 0,
+      "duration_ms": 0,
+      "config_generation": 1,
+      "dry_run": false
+    },
+    "default": {
+      "id": 100800,
+      "level": 0,
+      "groups": [
+        "fileward"
+      ]
+    },
+    "lab": {
+      "id": 100800,
+      "level": 0,
+      "groups": [
+        "fileward"
+      ]
+    }
+  },
+  {
+    "name": "startup-failure-empty-event",
+    "record": {
+      "schema_version": 1,
+      "sequence": 1,
+      "timestamp": "2026-11-12T13:49:41.418Z",
+      "provider": "fileward",
+      "program_version": "1.1.1",
+      "daemon_pid": 1234,
+      "event_id": "00000000000000000000000000000002-6",
+      "run_id": "00000000000000000000000000000002",
+      "parent_id": "",
+      "host_id": "00000000000000000000000000000001",
+      "host_name": "fileward-lab",
+      "kind": "watcher_error",
+      "outcome": "failure",
+      "code": "FW_WATCHER_START",
+      "event_type": "",
+      "watch_root": "/tmp/fileward-lab/missing/inbox",
+      "relative_path": "",
+      "path_base64": "",
+      "rule_name": "",
+      "action": "",
+      "message": "/tmp/fileward-lab/missing/inbox: watch root is not an accessible directory: No such file or directory",
+      "destination": "",
+      "destination_base64": "",
+      "file_size": null,
+      "file_mode": null,
+      "mtime_unix": null,
+      "exit_code": -1,
+      "signal": 0,
+      "errno": 2,
+      "attempt": 0,
+      "duration_ms": 0,
+      "config_generation": 1,
+      "dry_run": false
+    },
+    "default": {
+      "id": 100804,
+      "level": 5,
+      "groups": [
+        "fileward"
+      ]
+    },
+    "lab": {
+      "id": 100804,
+      "level": 5,
+      "groups": [
+        "fileward"
+      ]
+    }
+  },
+  {
+    "name": "base64-success",
+    "record": {
+      "schema_version": 1,
+      "sequence": 33,
+      "timestamp": "2026-11-12T13:49:41.047Z",
+      "provider": "fileward",
+      "program_version": "1.1.1",
+      "daemon_pid": 1234,
+      "event_id": "00000000000000000000000000000002-7",
+      "run_id": "00000000000000000000000000000002",
+      "parent_id": "00000000000000000000000000000002-0",
+      "host_id": "00000000000000000000000000000001",
+      "host_name": "fileward-lab",
+      "kind": "action_result",
+      "outcome": "success",
+      "code": "FW_OK",
+      "event_type": "moved_to",
+      "watch_root": "/tmp/fileward-lab/inbox",
+      "relative_path": "encoded-�.txt",
+      "path_base64": "ZW5jb2RlZC3/LnR4dA==",
+      "rule_name": "success",
+      "action": "log",
+      "message": "action completed",
+      "destination": "",
+      "destination_base64": "",
+      "file_size": 17,
+      "file_mode": 33204,
+      "mtime_unix": 1794491380,
+      "exit_code": -1,
+      "signal": 0,
+      "errno": 0,
+      "attempt": 1,
+      "duration_ms": 1,
+      "config_generation": 1,
+      "dry_run": false
+    },
+    "default": {
+      "id": 86600,
+      "level": 0,
+      "groups": [
+        "ids",
+        "suricata"
+      ]
+    },
+    "lab": {
+      "id": 100805,
+      "level": 3,
+      "groups": [
+        "fileward"
+      ]
+    }
+  },
+  {
+    "name": "other-provider",
+    "record": {
+      "schema_version": 1,
+      "sequence": 22,
+      "timestamp": "2026-11-12T13:49:40.990Z",
+      "provider": "other",
+      "program_version": "1.1.1",
+      "daemon_pid": 1234,
+      "event_id": "00000000000000000000000000000002-8",
+      "run_id": "00000000000000000000000000000002",
+      "parent_id": "00000000000000000000000000000002-0",
+      "host_id": "00000000000000000000000000000001",
+      "host_name": "fileward-lab",
+      "kind": "action_result",
+      "outcome": "failure",
+      "code": "FW_EXEC_EXIT",
+      "event_type": "moved_to",
+      "watch_root": "/tmp/fileward-lab/inbox",
+      "relative_path": "failure.pdf",
+      "path_base64": "ZmFpbHVyZS5wZGY=",
+      "rule_name": "failure",
+      "action": "exec",
+      "message": "command exited with a non-zero status",
+      "destination": "",
+      "destination_base64": "",
+      "file_size": 7,
+      "file_mode": 33204,
+      "mtime_unix": 1794491380,
+      "exit_code": 1,
+      "signal": 0,
+      "errno": 0,
+      "attempt": 1,
+      "duration_ms": 26,
+      "config_generation": 1,
+      "dry_run": false
+    },
+    "default": {
+      "id": 86600,
+      "level": 0,
+      "groups": [
+        "ids",
+        "suricata"
+      ]
+    },
+    "lab": {
+      "id": 86600,
+      "level": 0,
+      "groups": [
+        "ids",
+        "suricata"
+      ]
+    }
+  },
+  {
+    "name": "unsupported-schema",
+    "record": {
+      "schema_version": 2,
+      "sequence": 22,
+      "timestamp": "2026-11-12T13:49:40.990Z",
+      "provider": "fileward",
+      "program_version": "1.1.1",
+      "daemon_pid": 1234,
+      "event_id": "00000000000000000000000000000002-9",
+      "run_id": "00000000000000000000000000000002",
+      "parent_id": "00000000000000000000000000000002-0",
+      "host_id": "00000000000000000000000000000001",
+      "host_name": "fileward-lab",
+      "kind": "action_result",
+      "outcome": "failure",
+      "code": "FW_EXEC_EXIT",
+      "event_type": "moved_to",
+      "watch_root": "/tmp/fileward-lab/inbox",
+      "relative_path": "failure.pdf",
+      "path_base64": "ZmFpbHVyZS5wZGY=",
+      "rule_name": "failure",
+      "action": "exec",
+      "message": "command exited with a non-zero status",
+      "destination": "",
+      "destination_base64": "",
+      "file_size": 7,
+      "file_mode": 33204,
+      "mtime_unix": 1794491380,
+      "exit_code": 1,
+      "signal": 0,
+      "errno": 0,
+      "attempt": 1,
+      "duration_ms": 26,
+      "config_generation": 1,
+      "dry_run": false
+    },
+    "default": {
+      "id": 86600,
+      "level": 0,
+      "groups": [
+        "ids",
+        "suricata"
+      ]
+    },
+    "lab": {
+      "id": 86600,
+      "level": 0,
+      "groups": [
+        "ids",
+        "suricata"
+      ]
+    }
+  },
+  {
+    "name": "empty-event-action-failure",
+    "record": {
+      "schema_version": 1,
+      "sequence": 22,
+      "timestamp": "2026-11-12T13:49:40.990Z",
+      "provider": "fileward",
+      "program_version": "1.1.1",
+      "daemon_pid": 1234,
+      "event_id": "00000000000000000000000000000002-10",
+      "run_id": "00000000000000000000000000000002",
+      "parent_id": "00000000000000000000000000000002-0",
+      "host_id": "00000000000000000000000000000001",
+      "host_name": "fileward-lab",
+      "kind": "action_result",
+      "outcome": "failure",
+      "code": "FW_EXEC_EXIT",
+      "event_type": "",
+      "watch_root": "/tmp/fileward-lab/inbox",
+      "relative_path": "failure.pdf",
+      "path_base64": "ZmFpbHVyZS5wZGY=",
+      "rule_name": "failure",
+      "action": "exec",
+      "message": "command exited with a non-zero status",
+      "destination": "",
+      "destination_base64": "",
+      "file_size": 7,
+      "file_mode": 33204,
+      "mtime_unix": 1794491380,
+      "exit_code": 1,
+      "signal": 0,
+      "errno": 0,
+      "attempt": 1,
+      "duration_ms": 26,
+      "config_generation": 1,
+      "dry_run": false
+    },
+    "default": {
+      "id": 100801,
+      "level": 5,
+      "groups": [
+        "fileward"
+      ]
+    },
+    "lab": {
+      "id": 100801,
+      "level": 5,
+      "groups": [
+        "fileward"
+      ]
+    }
+  },
+  {
+    "name": "suricata-alert",
+    "record": {
+      "timestamp": "2026-11-12T10:00:00.000000+0000",
+      "event_type": "alert",
+      "src_ip": "192.0.2.10",
+      "dest_ip": "198.51.100.10",
+      "proto": "TCP",
+      "alert": {
+        "signature": "Fileward isolation fixture",
+        "signature_id": 1,
+        "severity": 3
+      }
+    },
+    "default": {
+      "id": 86601,
+      "level": 3,
+      "groups": [
+        "ids",
+        "suricata"
+      ]
+    },
+    "lab": {
+      "id": 86601,
+      "level": 3,
+      "groups": [
+        "ids",
+        "suricata"
+      ]
+    }
+  },
+  {
+    "name": "short-fileward-json",
+    "record": {
+      "provider": "fileward",
+      "schema_version": 1,
+      "kind": "action_result",
+      "outcome": "failure"
+    },
+    "default": {
+      "id": 100801,
+      "level": 5,
+      "groups": [
+        "fileward"
+      ]
+    },
+    "lab": {
+      "id": 100801,
+      "level": 5,
+      "groups": [
+        "fileward"
+      ]
+    }
+  }
+]
