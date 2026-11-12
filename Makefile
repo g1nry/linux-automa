@@ -57,6 +57,8 @@ check: build
 	python3 tests/integration/control-smoke.py ./$(BINARY)
 	python3 tests/integration/saved-smoke.py ./$(BINARY)
 	python3 tests/integration/journal-boundary.py ./$(BINARY)
+	python3 tests/integration/startup-smoke.py ./$(BINARY)
+	python3 tests/integration/example-smoke.py ./$(BINARY)
 	python3 tests/integration/installer-test.py ./$(BINARY)
 
 run: build

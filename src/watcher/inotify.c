@@ -83,6 +83,7 @@ static int add_watch_entry(int wd, const char *path) {
         audit_emit("watcher_error", "failure", "FW_WATCH_LIMIT", ENOSPC, "directory watch limit reached", 0,
                    0, NULL);
         log_error("too many watched directories");
+        errno = ENOSPC;
         return -1;
     }
 
@@ -118,14 +119,18 @@ static int add_directory_watch(const char *path) {
                                    IN_CLOSE_WRITE | IN_DELETE_SELF | IN_MOVE_SELF | IN_UNMOUNT | IN_ONLYDIR);
 
     if (wd == -1) {
+        int error = errno;
         degraded = 1;
-        audit_emit("watcher_error", "failure", "FW_WATCH_ADD", errno, path, 0, 0, NULL);
-        log_warn("cannot watch directory '%s': %s", path, strerror(errno));
+        audit_emit("watcher_error", "failure", "FW_WATCH_ADD", error, path, 0, 0, NULL);
+        log_warn("cannot watch directory '%s': %s", path, strerror(error));
+        errno = error;
         return -1;
     }
 
     if (add_watch_entry(wd, path) != 0) {
+        int error = errno;
         inotify_rm_watch(inotify_fd, wd);
+        errno = error;
         return -1;
     }
 
@@ -136,12 +141,15 @@ static int add_directory_watch(const char *path) {
 static int add_recursive_watches(const char *path) {
     struct stat st;
     if (stat(path, &st) != 0) {
-        log_warn("cannot stat '%s': %s", path, strerror(errno));
+        int error = errno;
+        log_warn("cannot stat '%s': %s", path, strerror(error));
+        errno = error;
         return -1;
     }
 
     if (!S_ISDIR(st.st_mode)) {
         log_warn("path is not a directory: %s", path);
+        errno = ENOTDIR;
         return -1;
     }
 
@@ -151,9 +159,11 @@ static int add_recursive_watches(const char *path) {
 
     DIR *dir = opendir(path);
     if (dir == NULL) {
+        int error = errno;
         degraded = 1;
-        log_warn("cannot open directory '%s': %s", path, strerror(errno));
-        return 0;
+        log_warn("cannot open directory '%s': %s", path, strerror(error));
+        errno = error;
+        return -1;
     }
 
     struct dirent *entry;
@@ -215,12 +225,14 @@ int start_watcher(const char *path) {
 
     if (path == NULL || path[0] == '\0') {
         log_error("watch path is empty");
+        errno = EINVAL;
         return -1;
     }
 
     written = snprintf(watched_path, sizeof(watched_path), "%s", path);
     if (written < 0 || (size_t)written >= sizeof(watched_path)) {
         log_error("watch path is too long");
+        errno = ENAMETOOLONG;
         return -1;
     }
 
@@ -231,7 +243,9 @@ int start_watcher(const char *path) {
 
     inotify_fd = inotify_init1(IN_CLOEXEC);
     if (inotify_fd == -1) {
-        log_error("inotify_init failed: %s", strerror(errno));
+        int error = errno;
+        log_error("inotify_init failed: %s", strerror(error));
+        errno = error;
         return -1;
     }
 
@@ -239,8 +253,11 @@ int start_watcher(const char *path) {
     degraded = 0;
 
     if (add_recursive_watches(watched_path) != 0) {
+        int error = errno;
         close(inotify_fd);
         inotify_fd = -1;
+        watch_count = 0;
+        errno = error;
         return -1;
     }
 

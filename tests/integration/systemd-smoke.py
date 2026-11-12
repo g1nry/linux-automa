@@ -84,6 +84,28 @@ with tempfile.TemporaryDirectory(prefix='fw-systemd $ %-') as folder:
         assert any(r['kind'] == 'action_result' and r['outcome'] == 'success' for r in records)
         ctl('stop', unit_name)
         assert not control.exists()
+        # Синтаксически верный watch может быть недоступен. Причина должна быть
+        # в journald и JSONL основного процесса, даже когда ExecStartPre успешен.
+        unit.write_text(unit.read_text().replace('Restart=on-failure', 'Restart=no'))
+        ctl('daemon-reload')
+        blocked = root / 'blocked'; blocked.mkdir()
+        failures = [(root / 'missing/inbox', 2)]
+        if os.geteuid() != 0:
+            blocked.chmod(0)
+            failures.append((blocked, 13))
+        try:
+            for watch, error in failures:
+                config.write_text(f'watch {watch}\nwhen created ** log\n')
+                ctl('reset-failed', unit_name, check=False)
+                assert ctl('start', unit_name, check=False).returncode != 0
+                output = subprocess.check_output(
+                    ['journalctl', '--user', '-u', unit_name, '--no-pager', '-n', '100'], text=True)
+                assert f'FW_WATCHER_START: {watch}:' in output and os.strerror(error) in output, output
+                records = [json.loads(line) for line in settings['journal'].read_text().splitlines()]
+                assert any(r['code'] == 'FW_WATCHER_START' and r['watch_root'] == str(watch)
+                           and r['errno'] == error and str(watch) in r['message'] for r in records)
+        finally:
+            blocked.chmod(0o700)
     except BaseException:
         print(ctl('status', unit_name, check=False).stdout, file=sys.stderr)
         print(subprocess.run(['journalctl', '--user', '-u', unit_name, '-n', '50', '--no-pager'], capture_output=True, text=True).stdout, file=sys.stderr)
