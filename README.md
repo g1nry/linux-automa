@@ -303,7 +303,13 @@ test -e fileward.conf || cp example.conf fileward.conf
 ~/.local/bin/fileward health
 ~/.local/bin/fileward history --limit 20
 ~/.local/bin/fileward stats
+journalctl --user -u fileward.service -p err -n 50 --no-pager
 ```
+
+Ошибки действий, очереди, готовности и запуска видны в journald с кодом, причиной
+и контекстом файла/правила. Для exec указаны статус выхода или сигнал. Настоящие
+приоритеты err/warning позволяют фильтровать их через `-p`; подробности и формат —
+в [руководстве по журналам](documentation/observability.md#ошибки-в-journalctl).
 
 JSONL содержит версию схемы, ID записи и её родителя, время, хост, путь,
 поколение конфигурации, правило, действие, результат, код причины и длительность.

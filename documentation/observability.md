@@ -7,6 +7,58 @@
 Журнал, текстовый лог и совместимый файл состояния должны находиться вне `watch`.
 Явно заданные относительные пути отсчитываются от сохранённой папки запуска.
 
+## Ошибки в journalctl
+
+Штатные units направляют stdout/stderr в journald. Типизированные отказы
+дополнительно к JSONL выводятся в stderr одной строкой с кодом `FW_*` и контекстом:
+событие, watch, относительный путь, правило, действие, назначение, номер попытки,
+время исполнения, поколение конфигурации, event_id и parent_id. Пустые поля
+опускаются. При системном отказе указаны числовой errno и его текстовая причина.
+Ошибки очереди содержат queued/active/capacity, ожидания — timeout/settle/mode.
+
+Ошибки имеют приоритет **err (3)**, повторы и предупреждения — **warning (4)**,
+обычные сообщения — info (6). Уровень задаётся префиксом потока, который systemd
+обрабатывает и убирает из MESSAGE при `SyslogLevelPrefix=yes`.
+Программа проверяет совпадение JOURNAL_STREAM с реальным stderr; терминал и
+`--log-file` получают обычный текст. libsystemd для этого не требуется.
+Описание механизма: [systemd.exec](https://www.freedesktop.org/software/systemd/man/256/systemd.exec.html#SyslogLevelPrefix=).
+
+```sh
+journalctl --user -u fileward.service -p err -n 50 --no-pager
+journalctl --user -u fileward.service -p warning -f
+journalctl --user -u fileward.service -o cat -n 50 --no-pager
+```
+
+Первая команда показывает ошибки и более высокие приоритеты, вторая — также
+предупреждения. После обновления исходников установите бинарь и unit через
+`make install-user`: смена Git-ветки не обновляет работающий сервис.
+
+Пример отказа команды, сокращённый для чтения:
+
+```text
+fileward: error: FW_EXEC_EXIT: kind="action_result" message="command exited with a non-zero status" watch_root="/home/user/inbox" relative_path="report.pdf" rule="scan" action="exec" executable="/usr/bin/checker" attempt=1 exit_code=1 duration_ms=42 generation=1 event_id="RUN-12" parent_id="RUN-4"
+```
+
+Для exec показываются путь исполняемого файла, exit_code либо signal/signal_name.
+Аргументы команды не добавляются в сообщение об отказе. Ненулевой статус процесса
+не выдаётся за системную ошибку `No child processes`: в action_result errno=0,
+а причина находится в FW_EXEC_EXIT/FW_EXEC_SIGNAL и статусе процесса. Финальный
+action_result печатается один раз; дополнительные exec_status остаются в JSONL.
+
+Переносы строк, кавычки и управляющие байты внутри значений экранируются;
+некорректные байты UTF-8 видны как `\xff`, а кириллица остаётся читаемой.
+Текстовые значения контекста ограничены 2 КиБ с явной отметкой `[truncated]`,
+чтобы одна ошибка оставалась короткой записью. Полные пути и path_base64 ищите
+в JSONL по event_id/parent_id.
+
+Отказ самого JSONL выводится без попытки ещё раз записать его в сломанный журнал:
+FW_JOURNAL_WRITE/FW_JOURNAL_SYNC, операция serialize/rotate/append/fdatasync/fsync,
+путь журнала и реальный errno. При нулевом write причиной считается EIO, при
+превышении лимита записи — EMSGSIZE. Исполнение останавливается, как и прежде.
+Обычная отмена при остановке и намеренные пропуски не превращаются в ошибки.
+
+## История и счётчики
+
 ```sh
 ./build/fileward run --config fileward.conf --journal /tmp/fileward/events.jsonl --workers 4
 ./build/fileward history --journal /tmp/fileward/events.jsonl --limit 20

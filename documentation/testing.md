@@ -12,9 +12,15 @@
 ## Проверки 1.1.1
 
 `make check` включает startup-smoke.py (watch preflight и причины отказов),
+errors-smoke.py (stderr, контекст отказов, коды exec, очередь, готовность,
+отказ чтения метаданных, экранирование и смена stderr через --log-file),
 example-smoke.py (исполнение единственного example.conf во временном HOME)
 и расширенный installer-test.py. `make check-systemd` дополнительно подтверждает
 ошибки отсутствующего/недоступного watch в journald и JSONL отдельного unit.
+Для ошибок действия и запуска проверяется настоящий PRIORITY=3 через
+`journalctl -p err -o json`, для предупреждения о переносе поддерева — PRIORITY=4.
+audit-test инъецирует отказы write/fdatasync/fsync, проверяет причину и сохранение
+errno, а также ограничение длинных полей без потери event_id в текстовом сообщении.
 
 Для уже подготовленного manager Wazuh 4.14.0 есть отдельный набор полных записей:
 
