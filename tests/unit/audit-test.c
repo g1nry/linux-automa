@@ -9,6 +9,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <fcntl.h>
 
 #define CHECK(c)                                                                                             \
     do {                                                                                                     \
@@ -18,6 +20,31 @@
         }                                                                                                    \
     } while (0)
 static int fail_write, interruptions, short_writes, zero_write, fail_fsync, fail_fdatasync;
+static const char *replace_on_rotate;
+static int foreign_owner;
+int __real_fstat(int, struct stat *);
+int __real_fstat64(int, struct stat64 *);
+int __wrap_fstat(int fd, struct stat *st) {
+    int result = __real_fstat(fd, st);
+    if (!result && foreign_owner) st->st_uid = geteuid() ^ 1;
+    return result;
+}
+int __wrap_fstat64(int fd, struct stat64 *st) {
+    int result = __real_fstat64(fd, st);
+    if (!result && foreign_owner) st->st_uid = geteuid() ^ 1;
+    return result;
+}
+int __real_rename(const char *, const char *);
+int __wrap_rename(const char *from, const char *to) {
+    int result = __real_rename(from, to);
+    if (!result && replace_on_rotate && !strcmp(from, replace_on_rotate)) {
+        int fd = open(from, O_CREAT | O_WRONLY | O_EXCL, 0600);
+        CHECK(fd >= 0 && fchmod(fd, 0644) == 0);
+        CHECK(write(fd, "untouched\n", 10) == 10);
+        close(fd);
+    }
+    return result;
+}
 ssize_t __real_write(int, const void *, size_t);
 int __real_fsync(int);
 int __real_fdatasync(int);
@@ -147,7 +174,40 @@ int main(void) {
     CHECK(strstr(text, "fdatasync journal record") && strstr(text, "fsync before closing journal"));
     CHECK(strstr(text, "append record to journal") && strstr(text, "errno=5") && strstr(text, path));
     CHECK(strstr(text, "[truncated]") && strstr(text, "event_id=\"still-visible\"") && used < 5000);
+    foreign_owner = 1;
+    CHECK(audit_open(path, 0) < 0 && errno == EPERM);
+    foreign_owner = 0;
+    pid_t child = fork();
+    CHECK(child >= 0);
+    if (!child) {
+        close(0); close(1); close(2);
+        if (audit_open(path, 0)) _exit(10);
+        close(0); close(1); close(2); /* Must not close the audit or lock fd. */
+        audit_emit("probe", "success", "FW_OK", 0, "closed stdio", 0, 0, NULL);
+        if (audit_failed()) _exit(11);
+        pid_t contender = fork();
+        if (contender < 0) _exit(12);
+        if (!contender) _exit(audit_open(path, 0) < 0 && errno == EWOULDBLOCK ? 0 : 13);
+        int status;
+        if (waitpid(contender, &status, 0) != contender || !WIFEXITED(status) || WEXITSTATUS(status)) _exit(14);
+        audit_close();
+        _exit(0);
+    }
+    int status;
+    CHECK(waitpid(child, &status, 0) == child && WIFEXITED(status) && !WEXITSTATUS(status));
+    CHECK(audit_open(path, 1) == 0);
+    replace_on_rotate = path;
+    audit_emit("probe", "success", "FW_OK", 0, "unsafe reopen", 0, 0, NULL);
+    replace_on_rotate = NULL;
+    CHECK(audit_failed());
+    audit_close();
+    FILE *replacement = fopen(path, "r");
+    CHECK(replacement && fgets(text, sizeof(text), replacement) && !strcmp(text, "untouched\n"));
+    CHECK(fgetc(replacement) == EOF);
+    fclose(replacement);
     unlink(path);
+    char segment[256];
+    for (int i = 1; i <= 3; i++) { snprintf(segment, sizeof(segment), "%s.%d", path, i); unlink(segment); }
     char lock[256];
     snprintf(lock, sizeof(lock), "%s.lock", path);
     unlink(lock);

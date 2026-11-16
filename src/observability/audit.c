@@ -29,6 +29,7 @@ void audit_set_sync(int enabled) {
 }
 static atomic_int failed;
 static uint64_t sequence, maximum;
+static uid_t journal_owner;
 static char journal_path[PATH_MAX], run_id[33], host_id[80], host_name[256];
 static _Thread_local struct {
     char root[PATH_MAX], path[PATH_MAX], event[32], parent[AUDIT_ID_SIZE], rule[64], action[32];
@@ -110,18 +111,42 @@ static int parents(const char *path) {
     return 0;
 }
 
+static int private_file(const struct stat *st) {
+    if (!S_ISREG(st->st_mode) || st->st_uid != journal_owner || st->st_nlink != 1 || (st->st_mode & 077)) {
+        errno = EPERM;
+        return -1;
+    }
+    return 0;
+}
+
 static int open_regular(const char *path) {
-    int fd = open(path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
-    struct stat st;
-    if (fd >= 0 && (fstat(fd, &st) || !S_ISREG(st.st_mode))) {
+    int fd = open(path, O_RDWR | O_APPEND | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
+    if (fd >= 0 && fd <= STDERR_FILENO) {
+        int copy = fcntl(fd, F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
+        int error = errno;
         close(fd);
-        errno = EINVAL;
+        fd = copy;
+        errno = error;
+    }
+    struct stat st;
+    int error = fd >= 0 && fstat(fd, &st) ? errno : 0;
+    int unsafe = fd >= 0 && !error && private_file(&st);
+    if (unsafe) error = errno;
+    if (error) {
+        close(fd);
+        if (unsafe) {
+            log_stderr(3, "FW_JOURNAL_UNSAFE: %s: expected private regular file uid=%lu nlink=1; actual uid=%lu mode=%04o nlink=%lu",
+                       path, (unsigned long)journal_owner, (unsigned long)st.st_uid,
+                       (unsigned)(st.st_mode & 07777), (unsigned long)st.st_nlink);
+        }
+        errno = error;
         return -1;
     }
     return fd;
 }
 
 int audit_open(const char *path, uint64_t max_bytes) {
+    journal_owner = geteuid();
     if (!path || !*path || strlen(path) >= sizeof(journal_path) - 8) {
         errno = EINVAL;
         return -1;
@@ -148,14 +173,10 @@ int audit_open(const char *path, uint64_t max_bytes) {
         return -1;
     }
     /* Refuse an incomplete tail rather than joining two different JSON records. */
-    int reader = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     struct stat st;
     char last;
-    int broken = reader < 0 || fstat(reader, &st) ||
-                 (st.st_size && (pread(reader, &last, 1, st.st_size - 1) != 1 || last != '\n'));
-    if (reader >= 0) {
-        close(reader);
-    }
+    int broken = fstat(output, &st) ||
+                 (st.st_size && (pread(output, &last, 1, st.st_size - 1) != 1 || last != '\n'));
     if (broken) {
         audit_close();
         errno = EILSEQ;
@@ -377,7 +398,7 @@ static void base64(json_buffer_t *buffer, const unsigned char *value) {
 
 static int rotate(size_t length) {
     struct stat st;
-    if (fstat(output, &st)) {
+    if (fstat(output, &st) || private_file(&st)) {
         return -1;
     }
     if (!maximum || (uint64_t)st.st_size + length <= maximum || !st.st_size) {
