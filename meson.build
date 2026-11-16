@@ -1,5 +1,5 @@
 project('fileward', 'c',
-        version: '1.1.1',
+        version: '1.1.2',
         license: 'MIT',
         default_options: ['warning_level=3', 'c_std=c11'])
 
@@ -46,6 +46,12 @@ audit_tests = executable('audit-test', 'tests/unit/audit-test.c', 'src/observabi
                          link_args: ['-Wl,--wrap=write', '-Wl,--wrap=fsync', '-Wl,--wrap=fdatasync', '-Wl,--wrap=rename',
                                      '-Wl,--wrap=fstat', '-Wl,--wrap=fstat64'])
 test('audit', audit_tests)
+
+query_tests = executable('query-test', 'tests/unit/query-test.c', 'src/observability/query.c',
+                        include_directories: inc,
+                        link_args: ['-Wl,--wrap=open', '-Wl,--wrap=open64', '-Wl,--wrap=lstat', '-Wl,--wrap=lstat64',
+                                    '-Wl,--wrap=pread', '-Wl,--wrap=pread64'])
+test('query', query_tests)
 
 state_tests = executable('state-test', 'tests/unit/state-test.c', 'src/observability/state.c',
                          include_directories: inc, dependencies: threads)

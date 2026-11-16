@@ -10,143 +10,302 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
-static int equal(const char *line, jsmntok_t *token, const char *value) {
-    return token && token->end - token->start == (int)strlen(value) &&
-           memcmp(line + token->start, value, strlen(value)) == 0;
+/* Pin descriptors before parsing; names can change during rotation. A capture
+ * is a bounded collection of inode prefixes, not an atomic global timestamp. */
+typedef struct {
+    int fd;
+    struct stat st;
+} segment_t;
+static void release_segments(segment_t files[4]) {
+    for (int i = 0; i < 4; i++)
+        if (files[i].fd >= 0) {
+            close(files[i].fd);
+            files[i].fd = -1;
+        }
 }
-static jsmntok_t *value(const char *line, jsmntok_t *tokens, int count, const char *key) {
+static int capture(const char *path, segment_t files[4]) {
+    for (int attempt = 0; attempt < 8; attempt++) {
+        int changed = 0;
+        char names[4][4096];
+        for (int i = 0; i < 4; i++)
+            files[i].fd = -1;
+        for (int i = 0; i < 4; i++) {
+            int n = i ? snprintf(names[i], sizeof(names[i]), "%s.%d", path, i)
+                      : snprintf(names[i], sizeof(names[i]), "%s", path);
+            if (n < 0 || n >= (int)sizeof(names[i])) {
+                errno = ENAMETOOLONG;
+                goto fail;
+            }
+            files[i].fd = open(names[i], O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+            if (files[i].fd < 0) {
+                if (errno != ENOENT)
+                    goto fail;
+                if (!i)
+                    changed = 1;
+                continue;
+            }
+            if (fstat(files[i].fd, &files[i].st))
+                goto fail;
+            if (!S_ISREG(files[i].st.st_mode)) {
+                errno = EINVAL;
+                goto fail;
+            }
+            for (int j = 0; j < i; j++) {
+                if (files[j].fd >= 0 && files[i].st.st_dev == files[j].st.st_dev &&
+                    files[i].st.st_ino == files[j].st.st_ino)
+                    changed = 1;
+            }
+        }
+        for (int i = 0; i < 4; i++) {
+            struct stat now;
+            if (lstat(names[i], &now)) {
+                if (errno != ENOENT)
+                    goto fail;
+                if (files[i].fd >= 0)
+                    changed = 1;
+            } else if (files[i].fd < 0 || now.st_dev != files[i].st.st_dev ||
+                       now.st_ino != files[i].st.st_ino)
+                changed = 1;
+        }
+        if (!changed)
+            return 0;
+        release_segments(files);
+        struct timespec delay = {0, 1000000};
+        nanosleep(&delay, NULL);
+    }
+    errno = EAGAIN;
+fail: {
+    int error = errno;
+    release_segments(files);
+    errno = error;
+    return -1;
+}
+}
+
+typedef struct {
+    unsigned char block[65536];
+    char line[AUDIT_RECORD_MAX + 1];
+    off_t position;
+    size_t available, used, partial;
+    int started, overflow, finished;
+} reverse_t;
+/* 1: complete line, 0: end/incomplete tail, -1: I/O, -2: oversized line.
+ * pread never follows appends beyond the captured size. */
+static int previous(reverse_t *r, int fd, char **line, size_t *length) {
+    while (!r->finished) {
+        if (!r->available && r->position) {
+            size_t n = r->position > (off_t)sizeof(r->block) ? sizeof(r->block) : (size_t)r->position;
+            off_t start = r->position - (off_t)n;
+            size_t done = 0;
+            while (done < n) {
+                ssize_t got = pread(fd, r->block + done, n - done, start + (off_t)done);
+                if (got < 0 && errno == EINTR)
+                    continue;
+                if (got <= 0) {
+                    if (!got)
+                        errno = ESTALE;
+                    return -1;
+                }
+                done += (size_t)got;
+            }
+            r->available = n;
+            r->position = start;
+        }
+        if (!r->available) {
+            r->finished = 1;
+            if (!r->started)
+                return r->partial > AUDIT_RECORD_MAX ? -2 : 0;
+            if (r->overflow)
+                return -2;
+            *length = r->used;
+            *line = r->line + AUDIT_RECORD_MAX - r->used;
+            return 1;
+        }
+        unsigned char c = r->block[--r->available];
+        if (c == '\n') {
+            if (r->started) {
+                int result = r->overflow ? -2 : 1;
+                *length = r->used;
+                *line = r->line + AUDIT_RECORD_MAX - r->used;
+                r->used = 1;
+                r->overflow = 0;
+                return result;
+            }
+            r->started = 1;
+            r->used = 1;
+            r->line[AUDIT_RECORD_MAX - 1] = '\n';
+            r->line[AUDIT_RECORD_MAX] = 0;
+            if (r->partial > AUDIT_RECORD_MAX)
+                return -2;
+        } else {
+            const unsigned char *newline = memrchr(r->block, '\n', r->available);
+            size_t start = newline ? (size_t)(newline - r->block) + 1 : 0;
+            size_t n = r->available + 1 - start;
+            r->available = start;
+            if (!r->started) {
+                r->partial = r->partial + n > AUDIT_RECORD_MAX ? AUDIT_RECORD_MAX + 1 : r->partial + n;
+            } else if (n > AUDIT_RECORD_MAX - r->used) {
+                r->overflow = 1;
+            } else if (!r->overflow) {
+                r->used += n;
+                memcpy(r->line + AUDIT_RECORD_MAX - r->used, r->block + start, n);
+            }
+        }
+    }
+    return 0;
+}
+static int equal(const char *line, const jsmntok_t *token, const char *value) {
+    return token && token->end - token->start == (int)strlen(value) &&
+           !memcmp(line + token->start, value, strlen(value));
+}
+/* Extract all needed top-level fields once; skip nested values by token extent. */
+typedef struct {
+    jsmntok_t *schema, *kind, *outcome, *code, *id, *parent;
+} fields_t;
+static fields_t fields(const char *line, jsmntok_t *tokens, int count) {
+    fields_t f = {0};
     for (int i = 1; i + 1 < count && tokens[i].start < tokens[0].end;) {
-        if (tokens[i].type != JSMN_STRING) {
-            return NULL;
+        if (tokens[i].type != JSMN_STRING)
+            break;
+        jsmntok_t **slot = NULL;
+        switch (tokens[i].end - tokens[i].start) {
+        case 4:
+            if (equal(line, tokens + i, "kind"))
+                slot = &f.kind;
+            else if (equal(line, tokens + i, "code"))
+                slot = &f.code;
+            break;
+        case 7:
+            if (equal(line, tokens + i, "outcome"))
+                slot = &f.outcome;
+            break;
+        case 8:
+            if (equal(line, tokens + i, "event_id"))
+                slot = &f.id;
+            break;
+        case 9:
+            if (equal(line, tokens + i, "parent_id"))
+                slot = &f.parent;
+            break;
+        case 14:
+            if (equal(line, tokens + i, "schema_version"))
+                slot = &f.schema;
+            break;
         }
-        if (equal(line, tokens + i, key)) {
-            return tokens + i + 1;
-        }
+        if (slot && !*slot)
+            *slot = tokens + i + 1;
+        if (f.schema && f.kind && f.outcome && f.code && f.id && f.parent)
+            break;
         int end = tokens[i + 1].end;
         i += 2;
-        while (i < count && tokens[i].start < end) {
+        while (i < count && tokens[i].start < end)
             i++;
-        }
     }
-    return NULL;
+    return f;
 }
-int audit_query(const char *path, int stats, int all, unsigned limit, const char *event_id) {
-    char **history = stats ? NULL : calloc(limit, sizeof(char *));
-    char *line = malloc(AUDIT_RECORD_MAX + 1);
-    if ((!stats && !history) || !line) {
-        free(history);
-        free(line);
+static int query(const char *path, int stats, int all, unsigned limit, const char *event_id, int tail) {
+    if (!limit || limit > 1000) {
+        errno = EINVAL;
         return 3;
     }
+    char **history = stats ? NULL : calloc(limit, sizeof(*history));
+    reverse_t *reader = calloc(1, sizeof(*reader));
+    if ((!stats && !history) || !reader) {
+        free(history);
+        free(reader);
+        return 3;
+    }
+    segment_t files[4];
+    int captured = !capture(path, files);
+    int capture_error = captured ? 0 : errno;
     uint64_t records = 0, observed = 0, ready = 0, succeeded = 0, failures = 0, skipped = 0, retries = 0,
              dropped = 0, cancelled = 0, matched = 0, processed = 0, actions_cancelled = 0, evaluated = 0,
              coalesced = 0, diagnostics = 0;
-    unsigned selected = 0, malformed = 0;
-    int found = 0;
-    for (int suffix = 3; suffix >= 0; suffix--) {
-        char name[4096];
-        int written = suffix ? snprintf(name, sizeof(name), "%s.%d", path, suffix)
-                             : snprintf(name, sizeof(name), "%s", path);
-        if (written < 0 || (size_t)written >= sizeof(name)) {
-            malformed++;
+    unsigned selected = 0, malformed = captured ? 0 : 1;
+    int found = captured;
+    for (int index = 0; captured && index < 4 && !(tail && selected == limit); index++) {
+        if (files[index].fd < 0)
             continue;
-        }
-        int fd = open(name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-        if (fd < 0) {
-            if (suffix == 0 || errno != ENOENT) {
+        memset(reader, 0, sizeof(*reader));
+        reader->position = files[index].st.st_size;
+        int result;
+        char *line;
+        size_t length;
+        while ((result = previous(reader, files[index].fd, &line, &length)) != 0) {
+            if (result < 0) {
                 malformed++;
+                if (result == -1)
+                    break;
+                continue;
             }
-            continue;
-        }
-        struct stat st;
-        if (fstat(fd, &st) || !S_ISREG(st.st_mode)) {
-            close(fd);
-            malformed++;
-            continue;
-        }
-        FILE *file = fdopen(fd, "r");
-        if (!file) {
-            close(fd);
-            malformed++;
-            continue;
-        }
-        found = 1;
-        /* Read a finite segment snapshot even when the active writer outpaces queries. */
-        while (ftello(file) < st.st_size && fgets(line, AUDIT_RECORD_MAX + 1, file)) {
-            if (ftello(file) > st.st_size) {
-                break;
-            }
-            if (!strchr(line, '\n')) {
-                /* A live writer can have an incomplete final line. */
-                if (!feof(file)) {
-                    int c;
-                    while ((c = fgetc(file)) != EOF && c != '\n') {
-                    }
-                    malformed++;
-                }
+            if (memchr(line, 0, length)) {
+                malformed++;
                 continue;
             }
             jsmn_parser parser;
             jsmntok_t tokens[512];
             jsmn_init(&parser);
-            int count = jsmn_parse(&parser, line, strlen(line), tokens, 512);
-            if (count < 1 || tokens[0].type != JSMN_OBJECT ||
-                !equal(line, value(line, tokens, count, "schema_version"), "1")) {
+            int count = jsmn_parse(&parser, line, length, tokens, 512);
+            if (count < 1 || tokens[0].type != JSMN_OBJECT) {
                 malformed++;
                 continue;
             }
-            jsmntok_t *kind = value(line, tokens, count, "kind");
-            jsmntok_t *outcome = value(line, tokens, count, "outcome");
-            jsmntok_t *code = value(line, tokens, count, "code");
-            if (!kind || !outcome || !code || !value(line, tokens, count, "event_id")) {
+            size_t end = (size_t)tokens[0].end;
+            while (end < length &&
+                   (line[end] == ' ' || line[end] == '\t' || line[end] == '\r' || line[end] == '\n'))
+                end++;
+            if (end != length) {
+                malformed++;
+                continue;
+            }
+            fields_t f = fields(line, tokens, count);
+            if (!equal(line, f.schema, "1") || !f.kind || !f.outcome || !f.code || !f.id ||
+                f.schema->type != JSMN_PRIMITIVE || f.kind->type != JSMN_STRING ||
+                f.outcome->type != JSMN_STRING || f.code->type != JSMN_STRING || f.id->type != JSMN_STRING) {
                 malformed++;
                 continue;
             }
             records++;
-            evaluated += equal(line, kind, "rule_evaluated");
-            coalesced += equal(line, kind, "event_coalesced");
-            diagnostics += equal(line, kind, "diagnostic") && equal(line, outcome, "error");
-            matched += equal(line, kind, "rule_evaluated") && equal(line, outcome, "matched");
-            processed += equal(line, kind, "event_finished");
-            observed += equal(line, kind, "file_observed");
-            ready += equal(line, kind, "file_ready");
-            retries += equal(line, kind, "action_retry");
-            dropped += equal(line, kind, "event_dropped");
-            cancelled += equal(line, kind, "event_cancelled");
-            if (equal(line, kind, "action_result")) {
-                succeeded += equal(line, outcome, "success");
-                actions_cancelled += equal(line, outcome, "cancelled");
-                skipped += equal(line, outcome, "skipped");
-                failures += equal(line, outcome, "failure");
-            } else {
-                failures += equal(line, outcome, "failure") && !equal(line, kind, "diagnostic") &&
-                            !equal(line, kind, "exec_status");
-            }
             if (stats) {
+                evaluated += equal(line, f.kind, "rule_evaluated");
+                coalesced += equal(line, f.kind, "event_coalesced");
+                diagnostics += equal(line, f.kind, "diagnostic") && equal(line, f.outcome, "error");
+                matched += equal(line, f.kind, "rule_evaluated") && equal(line, f.outcome, "matched");
+                processed += equal(line, f.kind, "event_finished");
+                observed += equal(line, f.kind, "file_observed");
+                ready += equal(line, f.kind, "file_ready");
+                retries += equal(line, f.kind, "action_retry");
+                dropped += equal(line, f.kind, "event_dropped");
+                cancelled += equal(line, f.kind, "event_cancelled");
+                if (equal(line, f.kind, "action_result")) {
+                    succeeded += equal(line, f.outcome, "success");
+                    actions_cancelled += equal(line, f.outcome, "cancelled");
+                    skipped += equal(line, f.outcome, "skipped");
+                    failures += equal(line, f.outcome, "failure");
+                } else {
+                    failures += equal(line, f.outcome, "failure") && !equal(line, f.kind, "diagnostic") &&
+                                !equal(line, f.kind, "exec_status");
+                }
                 continue;
             }
-            if (!all && !equal(line, kind, "action_result")) {
+            if ((!all && !equal(line, f.kind, "action_result")) || selected == limit)
                 continue;
-            }
-            if (event_id && !equal(line, value(line, tokens, count, "event_id"), event_id) &&
-                !equal(line, value(line, tokens, count, "parent_id"), event_id)) {
+            if (event_id && !equal(line, f.id, event_id) && !equal(line, f.parent, event_id))
                 continue;
-            }
-            free(history[selected % limit]);
-            history[selected % limit] = strdup(line);
-            if (!history[selected % limit]) {
+            history[selected] = strndup(line, length);
+            if (!history[selected]) {
                 malformed++;
                 break;
             }
             selected++;
+            if (tail && selected == limit)
+                break;
         }
-        if (ferror(file)) {
-            malformed++;
-        }
-        fclose(file);
     }
+    release_segments(files);
     if (stats) {
         printf("{\"schema_version\":1,\"scope\":\"retained_journal\",\"records\":%llu,\"events_observed\":%"
                "llu,\"events_ready\":%llu,\"events_processed\":%llu,\"rules_matched\":%llu,\"rules_"
@@ -161,22 +320,27 @@ int audit_query(const char *path, int stats, int all, unsigned limit, const char
                (unsigned long long)failures, (unsigned long long)retries, (unsigned long long)dropped,
                (unsigned long long)cancelled, malformed);
     } else {
-        unsigned start = selected > limit ? selected - limit : 0;
-        for (unsigned i = start; i < selected; i++) {
-            if (history[i % limit]) {
-                fputs(history[i % limit], stdout);
-            }
-        }
+        for (unsigned i = selected; i > 0; i--)
+            fputs(history[i - 1], stdout);
     }
     if (history) {
-        for (unsigned i = 0; i < limit; i++) {
+        for (unsigned i = 0; i < selected; i++)
             free(history[i]);
-        }
     }
     free(history);
-    free(line);
+    free(reader);
     if (malformed || !found) {
-        fprintf(stderr, "FW_JOURNAL_READ: missing/unreadable journal or %u malformed records\n", malformed);
+        if (capture_error)
+            fprintf(stderr, "FW_JOURNAL_READ: cannot capture stable journal segments: %s\n",
+                    strerror(capture_error));
+        else
+            fprintf(stderr, "FW_JOURNAL_READ: %u malformed or unreadable records\n", malformed);
     }
     return malformed || !found ? 3 : 0;
+}
+int audit_query(const char *path, int stats, int all, unsigned limit, const char *event_id) {
+    return query(path, stats, all, limit, event_id, 0);
+}
+int audit_query_recent(const char *path, int all, unsigned limit, const char *event_id) {
+    return query(path, 0, all, limit, event_id, 1);
 }
