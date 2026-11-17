@@ -2,8 +2,8 @@
 
 **Локальная автоматизация файлов для Linux**
 
-Текущая версия — **v1.1.1**, ветка `v1.1.1-wazuh-fixes`.
-Исправления интеграции Wazuh и диагностики запуска: [заметки к выпуску](documentation/releases/v1.1.1.md).
+Текущая версия — **v1.1.2**, ветка `v1.1.2-journal-hardening`.
+Защита JSONL, быстрые запросы и проверки доставки Wazuh: [заметки к выпуску](documentation/releases/v1.1.2.md).
 [План развития 1.2–1.10 и TUI](documentation/roadmap.md) ведётся отдельно.
 
 Fileward следит за каталогом через `inotify`, проверяет события по правилам и
@@ -302,6 +302,7 @@ test -e fileward.conf || cp example.conf fileward.conf
 ```bash
 ~/.local/bin/fileward health
 ~/.local/bin/fileward history --limit 20
+~/.local/bin/fileward history --tail --limit 20
 ~/.local/bin/fileward stats
 journalctl --user -u fileward.service -p err -n 50 --no-pager
 ```
@@ -317,6 +318,11 @@ JSONL содержит версию схемы, ID записи и её роди
 Стандартная ротация: 64 MiB на сегмент, текущий файл и ещё три сегмента.
 `--journal-sync` добавляет `fdatasync` после каждой записи. Отказ аудита
 останавливает дальнейшее исполнение.
+
+В 1.1.2 JSONL и lock требуют приватных прав, своего UID и одной ссылки.
+`history --tail` быстро выбирает последние результаты, проверяя только просмотренную
+часть; обычные history/stats проверяют все полные записи сохранённых сегментов.
+Условия обновления и чтения при ротации — в [руководстве](documentation/observability.md).
 
 Health возвращает `healthy` или `degraded`. Потери событий и уменьшение покрытия
 наблюдения сохраняют `degraded` до рестарта. Ошибки отдельных действий отражаются
