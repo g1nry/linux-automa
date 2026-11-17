@@ -28,6 +28,8 @@ jobs:
           meson test -C build-release --print-errorlogs
           python3 tests/integration/saved-smoke.py ./build-release/fileward
           python3 tests/integration/journal-boundary.py ./build-release/fileward
+          python3 tests/integration/journal-query.py ./build-release/fileward
+          python3 tests/integration/journal-security.py ./build-release/fileward
           python3 tests/integration/observability-smoke.py ./build-release/fileward
           python3 tests/integration/startup-smoke.py ./build-release/fileward
           python3 tests/integration/errors-smoke.py ./build-release/fileward
@@ -70,6 +72,8 @@ jobs:
           python3 tests/integration/control-smoke.py ./build-asan/fileward
           python3 tests/integration/saved-smoke.py ./build-asan/fileward
           python3 tests/integration/journal-boundary.py ./build-asan/fileward
+          python3 tests/integration/journal-query.py ./build-asan/fileward
+          python3 tests/integration/journal-security.py ./build-asan/fileward
           python3 tests/integration/startup-smoke.py ./build-asan/fileward
           python3 tests/integration/errors-smoke.py ./build-asan/fileward
           python3 tests/integration/example-smoke.py ./build-asan/fileward

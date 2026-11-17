@@ -57,7 +57,8 @@ with tempfile.TemporaryDirectory(prefix='fw-query-') as folder:
     assert run('history', '--tail', '--limit', '1').returncode == 0
     assert run('stats', '--tail').returncode == 1
     for suffix in ('.1','.2','.3'): Path(str(journal)+suffix).unlink()
-    for data in (b'\n', b'\x00\n', b'x'*131072+b'\n', b'x'*131073):
+    for data in (b'\n', b'\x00\n', b'x'*131072+b'\n', b'x'*131073,
+                 encode(rows[0]).rstrip(b'\n') + b'{}\n'):
         journal.write_bytes(data)
         assert run('stats').returncode == 3, len(data)
 print('journal queries match reference across segments, filters, block limits and partial tails')
