@@ -9,6 +9,9 @@ import xml.etree.ElementTree as ET
 root = Path(__file__).resolve().parents[2]
 for file in (root / 'integrations/wazuh').glob('*.xml'):
     ET.parse(file)
+collector = ET.parse(root / 'integrations/wazuh/agent-localfile.xml').getroot()
+assert collector.findtext('only-future-events') == 'no'
+assert collector.find('only-future-events').attrib['max-size'] == '128M'
 rules_file = root / 'integrations/wazuh/local_rules.xml'
 rules = ET.parse(rules_file).getroot().findall('rule')
 assert [r.attrib['id'] for r in rules] == [str(n) for n in range(100800, 100805)]

@@ -2,4 +2,6 @@
 <localfile>
   <location>/home/USER/.local/state/fileward/events.jsonl</location>
   <log_format>json</log_format>
+  <!-- Возобновление по bookmark; устраняйте повторы во внешнем обработчике по event_id. -->
+  <only-future-events max-size="128M">no</only-future-events>
 </localfile>

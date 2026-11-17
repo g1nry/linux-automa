@@ -24,4 +24,5 @@ void audit_exec_status(int exit_code, int signal);
 void audit_executable(const char *path);
 void audit_diagnostic(const char *level, const char *message);
 int audit_query(const char *path, int stats, int all, unsigned limit, const char *event_id);
+int audit_query_recent(const char *path, int all, unsigned limit, const char *event_id);
 #endif

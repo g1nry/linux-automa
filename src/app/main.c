@@ -109,7 +109,7 @@ static void print_usage(const char *program_name) {
     fprintf(stderr, "       %s status [--pidfile <file>]\n", program_name);
     fprintf(stderr, "       %s reload [--socket <path> | --pidfile <file>]\n", program_name);
     fprintf(stderr, "       %s health [--socket <path>]\n", program_name);
-    fprintf(stderr, "       %s history [--journal <file>] [--all] [--limit <count>] [--event-id <id>]\n",
+    fprintf(stderr, "       %s history [--journal <file>] [--all] [--tail] [--limit <count>] [--event-id <id>]\n",
             program_name);
     fprintf(stderr, "       %s stats [--journal <file>]\n", program_name);
     fprintf(stderr, "       %s actions\n", program_name);
@@ -1202,17 +1202,19 @@ static int journal_command(int argc, char **argv, int stats) {
     }
     const char *path = default_path, *id = NULL;
     unsigned limit = 50;
-    int all = 0;
+    int all = 0, tail = 0;
     for (int i = 0; i < argc; i++) {
         if (is_help_arg(argv[i])) {
-            printf("Usage: fileward %s [--journal <file>] [--limit 1..1000] [--all] [--event-id <id>]\n",
-                   stats ? "stats" : "history");
+            printf("Usage: fileward %s [--journal <file>]%s\n", stats ? "stats" : "history",
+                   stats ? "" : " [--limit 1..1000] [--all] [--tail] [--event-id <id>]");
             return 0;
         }
         if (strcmp(argv[i], "--journal") == 0 && i + 1 < argc) {
             path = argv[++i];
         } else if (!stats && strcmp(argv[i], "--all") == 0) {
             all = 1;
+        } else if (!stats && strcmp(argv[i], "--tail") == 0) {
+            tail = 1;
         } else if (!stats && strcmp(argv[i], "--event-id") == 0 && i + 1 < argc) {
             id = argv[++i];
         } else if (!stats && strcmp(argv[i], "--limit") == 0 && i + 1 < argc) {
@@ -1226,7 +1228,7 @@ static int journal_command(int argc, char **argv, int stats) {
             return EXIT_USAGE;
         }
     }
-    return audit_query(path, stats, all, limit, id);
+    return tail ? audit_query_recent(path, all, limit, id) : audit_query(path, stats, all, limit, id);
 }
 
 int main(int argc, char *argv[]) {
