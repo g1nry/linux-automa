@@ -24,6 +24,7 @@ jobs:
 
       - name: Build and check optimized binary
         run: |
+          meson setup build-release --buildtype=release -Db_ndebug=false -Dc_args=-D_FORTIFY_SOURCE=3
           make release
           meson test -C build-release --print-errorlogs
           python3 tests/integration/saved-smoke.py ./build-release/fileward

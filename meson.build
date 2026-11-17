@@ -50,7 +50,8 @@ test('audit', audit_tests)
 query_tests = executable('query-test', 'tests/unit/query-test.c', 'src/observability/query.c',
                         include_directories: inc,
                         link_args: ['-Wl,--wrap=open', '-Wl,--wrap=open64', '-Wl,--wrap=lstat', '-Wl,--wrap=lstat64',
-                                    '-Wl,--wrap=pread', '-Wl,--wrap=pread64'])
+                                    '-Wl,--wrap=pread', '-Wl,--wrap=pread64',
+                                    '-Wl,--wrap=__pread_chk', '-Wl,--wrap=__pread64_chk'])
 test('query', query_tests)
 
 state_tests = executable('state-test', 'tests/unit/state-test.c', 'src/observability/state.c',

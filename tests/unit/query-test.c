@@ -22,6 +22,8 @@ int __real_lstat(const char *, struct stat *);
 int __real_lstat64(const char *, struct stat64 *);
 ssize_t __real_pread(int, void *, size_t, off_t);
 ssize_t __real_pread64(int, void *, size_t, off64_t);
+ssize_t __real___pread_chk(int, void *, size_t, off_t, size_t);
+ssize_t __real___pread64_chk(int, void *, size_t, off64_t, size_t);
 static void record(const char *path, const char *id) {
     FILE *f = fopen(path, "w");
     CHECK(f);
@@ -76,6 +78,16 @@ ssize_t __wrap_pread64(int fd, void *out, size_t n, off64_t pos) {
     reading();
     return __real_pread64(fd, out, n, pos);
 }
+/* Fortified optimized builds may call the checked glibc entry points. Keep
+ * their buffer checks and inject the same filesystem change before reading. */
+ssize_t __wrap___pread_chk(int fd, void *out, size_t n, off_t pos, size_t capacity) {
+    reading();
+    return __real___pread_chk(fd, out, n, pos, capacity);
+}
+ssize_t __wrap___pread64_chk(int fd, void *out, size_t n, off64_t pos, size_t capacity) {
+    reading();
+    return __real___pread64_chk(fd, out, n, pos, capacity);
+}
 static void query(int scenario, int expected, const char *count) {
     FILE *out = tmpfile();
     CHECK(out);
@@ -83,10 +95,15 @@ static void query(int scenario, int expected, const char *count) {
     CHECK(saved >= 0 && dup2(fileno(out), 1) >= 0);
     mode = scenario;
     int result = audit_query(active, 1, 0, 20, NULL);
+    int injected = mode != scenario;
     mode = 0;
     fflush(stdout);
     CHECK(dup2(saved, 1) >= 0);
     close(saved);
+    if (result != expected || (scenario != 4 && !injected))
+        fprintf(stderr, "query scenario %d: expected status %d, got %d; injected=%d\n",
+                scenario, expected, result, injected);
+    CHECK(scenario == 4 || injected);
     CHECK(result == expected);
     rewind(out);
     char text[4096];
